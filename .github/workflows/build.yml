@@ -50,12 +50,13 @@ jobs:
         if: env.SKIP != 'true'
         run: make -C mpy-cross
 
-      - name: Force Enable 03H Boot2 for RP2350
+      - name: Patch Board Config for ZD25Q32D (Adjust Flash Timing)
         if: env.SKIP != 'true'
         run: |
-          # 向 Pico 2 板级配置中追加 SDK 认可的 03H 引导标志
-          BOARD_CMAKE="ports/rp2/boards/RPI_PICO2/mpconfigboard.cmake"
-          sed -i '1i set(PICO_BOOT2_GENERIC_03H 1)' $BOARD_CMAKE
+          BOARD_HEADER="ports/rp2/boards/RPI_PICO2/mpconfigboard.h"
+          # 开启 XIP Setup 使得 Boot Stage2 生效，并降低 Flash SPI 时钟分频
+          echo "#define PICO_EMBED_XIP_SETUP 1" >> $BOARD_HEADER
+          echo "#define PICO_FLASH_SPI_CLKDIV 4" >> $BOARD_HEADER
 
       - name: Compile RP2350 Firmware
         if: env.SKIP != 'true'
@@ -77,6 +78,6 @@ jobs:
           tag_name: ${{ env.LATEST_TAG }}
           name: MicroPython ${{ env.LATEST_TAG }} (ZD25Q32D Custom Build)
           body: |
-            自动编译适配 ZD25Q32D / ZD25Q32DEIGR Flash 芯片的 MicroPython 专版固件（已开启 PICO_BOOT2_GENERIC_03H）。
+            针对 ZD25Q32D / ZD25Q32DEIGR 4MB Flash 通用 MicroPython 固件（强制使能 PICO_EMBED_XIP_SETUP=1 并降低 Flash SPI 时钟分频至 4 兼容各种第三方PICO2 2350x）。
             对应官方上游版本：${{ env.LATEST_TAG }}
           files: ${{ env.TARGET_FILENAME }}
