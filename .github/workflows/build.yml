@@ -1,40 +1,86 @@
-name: Build Custom MicroPython for ZD25Q32D
+name: Auto Build MicroPython for ZD25Q32D
 
-on: [workflow_dispatch]
+on:
+  schedule:
+    # 每天 UTC 00:00（北京时间上午 8:00）自动巡检一次官方更新
+    - cron: '0 0 * * *'
+  workflow_dispatch: # 保留手动点击编译按钮
 
 jobs:
-  build:
+  check-and-build:
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Checkout MicroPython
+      - name: Fetch Latest MicroPython Release Info
+        id: get_latest
+        run: |
+          # 获取官方最新 Release Tag (例如 v1.29.0)
+          LATEST_TAG=$(curl -s https://api.github.com/repos/micropython/micropython/releases/latest | jq -r .tag_name)
+          echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
+          
+          # 获取今天日期 (YYYYMMDD 格式)
+          BUILD_DATE=$(date +'%Y%m%d')
+          echo "BUILD_DATE=$BUILD_DATE" >> $GITHUB_ENV
+
+      - name: Check if Version Already Built
+        id: check_built
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 检查自己仓库是否已经发布过这个版本的 Release
+          if gh release view "$LATEST_TAG" >/dev/null 2>&1; then
+            echo "版本 $LATEST_TAG 已存在，跳过编译。"
+            echo "SKIP=true" >> $GITHUB_ENV
+          else
+            echo "发现官方新版本 $LATEST_TAG，准备编译！"
+            echo "SKIP=false" >> $GITHUB_ENV
+          fi
+
+      - name: Checkout MicroPython Source Code
+        if: env.SKIP != 'true'
         uses: actions/checkout@v4
         with:
           repository: micropython/micropython
-          ref: v1.29.0
+          ref: ${{ env.LATEST_TAG }}
           submodules: recursive
 
-      - name: Install dependencies
+      - name: Install Build Dependencies
+        if: env.SKIP != 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-arm-none-eabi cmake build-essential
+          sudo apt-get install -y gcc-arm-none-eabi cmake build-essential jq
 
       - name: Build mpy-cross
+        if: env.SKIP != 'true'
         run: make -C mpy-cross
 
-      - name: Modify Boot2 for ZD25Q32D Flash
+      - name: Patch Boot2 for ZD25Q32D Flash
+        if: env.SKIP != 'true'
         run: |
           sed -i 's/PICO_BOOT2_SOURCE.*/PICO_BOOT2_SOURCE \x24{PICO_SDK_PATH}\/src\/rp2_common\/boot_stage2\/boot2_generic_03h.S)/g' ports/rp2/boards/RPI_PICO2/mpconfigboard.cmake
 
-      - name: Build Firmware
+      - name: Compile RP2350 Firmware
+        if: env.SKIP != 'true'
         run: |
           cd ports/rp2
           make BOARD=RPI_PICO2
 
-      - name: Create Release
+      - name: Prepare Named UF2 File
+        if: env.SKIP != 'true'
+        run: |
+          # 格式化文件名：RPI_PICO2_ZD25Q32DEIGR-20260824-v1.29.0.uf2
+          TARGET_FILENAME="RPI_PICO2_ZD25Q32DEIGR-${BUILD_DATE}-${LATEST_TAG}.uf2"
+          mv ports/rp2/build-RPI_PICO2/firmware.uf2 "${TARGET_FILENAME}"
+          echo "TARGET_FILENAME=${TARGET_FILENAME}" >> $GITHUB_ENV
+
+      - name: Publish to GitHub Releases
+        if: env.SKIP != 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.29.0-ZD25Q32D
-          name: MicroPython v1.29.0 (ZD25Q32D Flash)
-          files: ports/rp2/build-RPI_PICO2/firmware.uf2
+          tag_name: ${{ env.LATEST_TAG }}
+          name: MicroPython ${{ env.LATEST_TAG }} (ZD25Q32D Custom Build)
+          body: |
+            自动编译适配 ZD25Q32D / ZD25Q32DEIGR Flash 芯片的 MicroPython 专版固件（已强制启用 boot2_generic_03h）。
+            对应官方上游版本：${{ env.LATEST_TAG }}
+          files: ${{ env.TARGET_FILENAME }}
