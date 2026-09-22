@@ -24,7 +24,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 检查自己仓库是否已经发布过这个版本的 Release
           if gh release view "$LATEST_TAG" >/dev/null 2>&1; then
             echo "版本 $LATEST_TAG 已存在，跳过编译。"
             echo "SKIP=true" >> $GITHUB_ENV
@@ -51,11 +50,12 @@ jobs:
         if: env.SKIP != 'true'
         run: make -C mpy-cross
 
-      - name: Patch Boot2 for RP2350 + ZD25Q32D Flash
+      - name: Force Enable 03H Boot2 for RP2350
         if: env.SKIP != 'true'
         run: |
-          # 关键修正：指向 src/rp2350/boot_stage2/ 下的 RP2350 专用 03h 引导
-          sed -i 's|PICO_BOOT2_SOURCE.*|PICO_BOOT2_SOURCE \x24{PICO_SDK_PATH}/src/rp2350/boot_stage2/boot2_generic_03h.S)|g' ports/rp2/boards/RPI_PICO2/mpconfigboard.cmake
+          # 向 Pico 2 板级配置中追加 SDK 认可的 03H 引导标志
+          BOARD_CMAKE="ports/rp2/boards/RPI_PICO2/mpconfigboard.cmake"
+          sed -i '1i set(PICO_BOOT2_GENERIC_03H 1)' $BOARD_CMAKE
 
       - name: Compile RP2350 Firmware
         if: env.SKIP != 'true'
@@ -77,6 +77,6 @@ jobs:
           tag_name: ${{ env.LATEST_TAG }}
           name: MicroPython ${{ env.LATEST_TAG }} (ZD25Q32D Custom Build)
           body: |
-            自动编译适配 ZD25Q32D / ZD25Q32DEIGR 4MB Flash 芯片的 MicroPython 专版固件（RP2350 架构 + 03h 引导）。
+            自动编译适配 ZD25Q32D / ZD25Q32DEIGR Flash 芯片的 MicroPython 专版固件（已开启 PICO_BOOT2_GENERIC_03H）。
             对应官方上游版本：${{ env.LATEST_TAG }}
           files: ${{ env.TARGET_FILENAME }}
