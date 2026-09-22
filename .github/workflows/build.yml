@@ -1,0 +1,38 @@
+name: Build Custom MicroPython for ZD25Q32D
+
+on: [workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout MicroPython
+        uses: actions/checkout@v4
+        with:
+          repository: micropython/micropython
+          ref: v1.29.0
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-none-eabi cmake build-essential
+
+      - name: Build mpy-cross
+        run: make -C mpy-cross
+
+      - name: Modify Boot2 for ZD25Q32D Flash
+        run: |
+          # 将 Pico 2 默认的 Boot2 切换为兼容性极佳的 03h 通用引导
+          sed -i 's/PICO_BOOT2_SOURCE.*/PICO_BOOT2_SOURCE \x24{PICO_SDK_PATH}\/src\/rp2_common\/boot_stage2\/boot2_generic_03h.S)/g' ports/rp2/boards/RPI_PICO2/mpconfigboard.cmake
+
+      - name: Build Firmware
+        run: |
+          cd ports/rp2
+          make BOARD=RPI_PICO2
+
+      - name: Upload UF2 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MicroPython-v1.29.0-ZD25Q32D-Compatible
+          path: ports/rp2/build-RPI_PICO2/firmware.uf2
