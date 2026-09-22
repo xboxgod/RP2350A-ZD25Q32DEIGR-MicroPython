@@ -13,8 +13,14 @@ jobs:
     steps:
       - name: Fetch Latest MicroPython Release Info
         id: get_latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          LATEST_TAG=$(curl -s https://api.github.com/repos/micropython/micropython/releases/latest | jq -r .tag_name)
+          LATEST_TAG=$(curl -s -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/micropython/micropython/releases/latest | jq -r .tag_name)
+          if [ "$LATEST_TAG" = "null" ] || [ -z "$LATEST_TAG" ]; then
+            echo "获取最新版本失败！"
+            exit 1
+          fi
           echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
           BUILD_DATE=$(date +'%Y%m%d')
           echo "BUILD_DATE=$BUILD_DATE" >> $GITHUB_ENV
@@ -44,19 +50,29 @@ jobs:
         if: env.SKIP != 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-arm-none-eabi cmake build-essential jq
+          sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib cmake build-essential jq python3-pip python3-pyelftools
 
-      - name: Build mpy-cross
-        if: env.SKIP != 'true'
-        run: make -C mpy-cross
-
-      - name: Patch Board Config for ZD25Q32D (Adjust Flash Timing via CMake)
+      - name: Build mpy-cross and Fetch Submodules
         if: env.SKIP != 'true'
         run: |
+          make -C mpy-cross
+          make -C ports/rp2 submodules
+
+      - name: Patch Board Config for ZD25Q32D (Adjust Flash Timing)
+        if: env.SKIP != 'true'
+        run: |
+          BOARD_HEADER="ports/rp2/boards/RPI_PICO2/mpconfigboard.h"
           BOARD_CMAKE="ports/rp2/boards/RPI_PICO2/mpconfigboard.cmake"
-          # 直接向 CMake 配置追加 Pico SDK 认可的 Flash 分频与 XIP 启动标志
-          echo "set(PICO_EMBED_XIP_SETUP 1)" >> $BOARD_CMAKE
-          echo "set(PICO_FLASH_SPI_CLKDIV 4)" >> $BOARD_CMAKE
+
+          # 1. 在 mpconfigboard.h 中强制指定 SPI 4分频 (约 37.5MHz)，大幅提升国产 Flash 稳定度
+          echo "" >> $BOARD_HEADER
+          echo "// ZD25Q32D Custom Flash Timing Fix" >> $BOARD_HEADER
+          echo "#ifndef PICO_FLASH_SPI_CLKDIV" >> $BOARD_HEADER
+          echo "#define PICO_FLASH_SPI_CLKDIV 4" >> $BOARD_HEADER
+          echo "#endif" >> $BOARD_HEADER
+
+          # 2. CMake 层面全局注入编译宏
+          echo "add_compile_definitions(PICO_FLASH_SPI_CLKDIV=4)" >> $BOARD_CMAKE
 
       - name: Compile RP2350 Firmware
         if: env.SKIP != 'true'
@@ -79,6 +95,6 @@ jobs:
           name: MicroPython ${{ env.LATEST_TAG }} (ZD25Q32D Custom Build)
           body: |
             针对 ZD25Q32D / ZD25Q32DEIGR 4MB Flash 通用 MicroPython 固件。
-            （兼容更多第三方FLASH的PICO2开发版）
+            （Flash SPI 时钟分频降至 4，以改善某些Flash 在RP2350系列上的读写稳定性）
             对应官方上游版本：${{ env.LATEST_TAG }}
           files: ${{ env.TARGET_FILENAME }}
