@@ -2,9 +2,8 @@ name: Auto Build MicroPython for ZD25Q32D
 
 on:
   schedule:
-    # 每天 UTC 00:00（北京时间上午 8:00）自动巡检一次官方更新
     - cron: '0 0 * * *'
-  workflow_dispatch: # 保留手动点击编译按钮
+  workflow_dispatch:
 
 jobs:
   check-and-build:
@@ -15,11 +14,8 @@ jobs:
       - name: Fetch Latest MicroPython Release Info
         id: get_latest
         run: |
-          # 获取官方最新 Release Tag (例如 v1.29.0)
           LATEST_TAG=$(curl -s https://api.github.com/repos/micropython/micropython/releases/latest | jq -r .tag_name)
           echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
-          
-          # 获取今天日期 (YYYYMMDD 格式)
           BUILD_DATE=$(date +'%Y%m%d')
           echo "BUILD_DATE=$BUILD_DATE" >> $GITHUB_ENV
 
@@ -55,10 +51,11 @@ jobs:
         if: env.SKIP != 'true'
         run: make -C mpy-cross
 
-      - name: Patch Boot2 for ZD25Q32D Flash
+      - name: Patch Boot2 for RP2350 + ZD25Q32D Flash
         if: env.SKIP != 'true'
         run: |
-          sed -i 's/PICO_BOOT2_SOURCE.*/PICO_BOOT2_SOURCE \x24{PICO_SDK_PATH}\/src\/rp2_common\/boot_stage2\/boot2_generic_03h.S)/g' ports/rp2/boards/RPI_PICO2/mpconfigboard.cmake
+          # 关键修正：指向 src/rp2350/boot_stage2/ 下的 RP2350 专用 03h 引导
+          sed -i 's|PICO_BOOT2_SOURCE.*|PICO_BOOT2_SOURCE \x24{PICO_SDK_PATH}/src/rp2350/boot_stage2/boot2_generic_03h.S)|g' ports/rp2/boards/RPI_PICO2/mpconfigboard.cmake
 
       - name: Compile RP2350 Firmware
         if: env.SKIP != 'true'
@@ -69,7 +66,6 @@ jobs:
       - name: Prepare Named UF2 File
         if: env.SKIP != 'true'
         run: |
-          # 格式化文件名：RPI_PICO2_ZD25Q32DEIGR-20260824-v1.29.0.uf2
           TARGET_FILENAME="RPI_PICO2_ZD25Q32DEIGR-${BUILD_DATE}-${LATEST_TAG}.uf2"
           mv ports/rp2/build-RPI_PICO2/firmware.uf2 "${TARGET_FILENAME}"
           echo "TARGET_FILENAME=${TARGET_FILENAME}" >> $GITHUB_ENV
@@ -81,6 +77,6 @@ jobs:
           tag_name: ${{ env.LATEST_TAG }}
           name: MicroPython ${{ env.LATEST_TAG }} (ZD25Q32D Custom Build)
           body: |
-            自动编译适配 ZD25Q32D / ZD25Q32DEIGR Flash 芯片的 MicroPython 专版固件（已强制启用 boot2_generic_03h）。
+            自动编译适配 ZD25Q32D / ZD25Q32DEIGR 4MB Flash 芯片的 MicroPython 专版固件（RP2350 架构 + 03h 引导）。
             对应官方上游版本：${{ env.LATEST_TAG }}
           files: ${{ env.TARGET_FILENAME }}
