@@ -58,20 +58,22 @@ jobs:
           make -C mpy-cross
           make -C ports/rp2 submodules
 
-      - name: Patch Board Config for ZD25Q32D (Adjust Flash Timing)
+      - name: Patch Board Config for ZD25Q32D (Dual-SPI Mode & Clock Div)
         if: env.SKIP != 'true'
         run: |
           BOARD_HEADER="ports/rp2/boards/RPI_PICO2/mpconfigboard.h"
           BOARD_CMAKE="ports/rp2/boards/RPI_PICO2/mpconfigboard.cmake"
 
-          # 1. 在 mpconfigboard.h 中强制指定 SPI 4分频 (约 37.5MHz)，大幅提升国产 Flash 稳定度
+          # 1. 在 mpconfigboard.h 中强制指定 SPI 4分频 (约 37.5MHz)，提高信号容错率
           echo "" >> $BOARD_HEADER
-          echo "// ZD25Q32D Custom Flash Timing Fix" >> $BOARD_HEADER
+          echo "// ZD25Q32D Custom Flash Fix" >> $BOARD_HEADER
           echo "#ifndef PICO_FLASH_SPI_CLKDIV" >> $BOARD_HEADER
           echo "#define PICO_FLASH_SPI_CLKDIV 4" >> $BOARD_HEADER
           echo "#endif" >> $BOARD_HEADER
 
-          # 2. CMake 层面全局注入编译宏
+          # 2. 修改 RP2350 镜像头的 Flash 传输模式为 Dual-SPI (双线模式)
+          # 规避 ZD25Q32D 出厂 QE 位为 0 导致 4 线 QSPI 启动死锁的问题
+          echo "set(PICO_FLASH_MODE \"dual\")" >> $BOARD_CMAKE
           echo "add_compile_definitions(PICO_FLASH_SPI_CLKDIV=4)" >> $BOARD_CMAKE
 
       - name: Compile RP2350 Firmware
@@ -95,6 +97,6 @@ jobs:
           name: MicroPython ${{ env.LATEST_TAG }} (ZD25Q32D Custom Build)
           body: |
             针对 ZD25Q32D / ZD25Q32DEIGR 4MB Flash 通用 MicroPython 固件。
-            （Flash SPI 时钟分频降至 4，以改善某些Flash 在RP2350系列上的读写稳定性）
+            （修改项：切换 Flash 传输模式为 Dual-SPI，解决出厂 QE=0 导致的开机死锁；SPI 时钟分频降至 4）
             对应官方上游版本：${{ env.LATEST_TAG }}
           files: ${{ env.TARGET_FILENAME }}
