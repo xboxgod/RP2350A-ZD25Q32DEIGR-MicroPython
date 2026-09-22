@@ -50,13 +50,13 @@ jobs:
         if: env.SKIP != 'true'
         run: make -C mpy-cross
 
-      - name: Patch Board Config for ZD25Q32D (Adjust Flash Timing)
+      - name: Patch Board Config for ZD25Q32D (Adjust Flash Timing via CMake)
         if: env.SKIP != 'true'
         run: |
-          BOARD_HEADER="ports/rp2/boards/RPI_PICO2/mpconfigboard.h"
-          # 开启 XIP Setup 使得 Boot Stage2 生效，并降低 Flash SPI 时钟分频
-          echo "#define PICO_EMBED_XIP_SETUP 1" >> $BOARD_HEADER
-          echo "#define PICO_FLASH_SPI_CLKDIV 4" >> $BOARD_HEADER
+          BOARD_CMAKE="ports/rp2/boards/RPI_PICO2/mpconfigboard.cmake"
+          # 直接向 CMake 配置追加 Pico SDK 认可的 Flash 分频与 XIP 启动标志
+          echo "set(PICO_EMBED_XIP_SETUP 1)" >> $BOARD_CMAKE
+          echo "set(PICO_FLASH_SPI_CLKDIV 4)" >> $BOARD_CMAKE
 
       - name: Compile RP2350 Firmware
         if: env.SKIP != 'true'
@@ -78,6 +78,7 @@ jobs:
           tag_name: ${{ env.LATEST_TAG }}
           name: MicroPython ${{ env.LATEST_TAG }} (ZD25Q32D Custom Build)
           body: |
-            针对 ZD25Q32D / ZD25Q32DEIGR 4MB Flash 通用 MicroPython 固件（强制使能 PICO_EMBED_XIP_SETUP=1 并降低 Flash SPI 时钟分频至 4 兼容各种第三方PICO2 2350x）。
+            针对 ZD25Q32D / ZD25Q32DEIGR Flash 芯片定制的 MicroPython 固件。
+            （修改项：在 CMake 配置中强行开启 PICO_EMBED_XIP_SETUP=1 并将 Flash SPI 时钟分频降至 4）
             对应官方上游版本：${{ env.LATEST_TAG }}
           files: ${{ env.TARGET_FILENAME }}
