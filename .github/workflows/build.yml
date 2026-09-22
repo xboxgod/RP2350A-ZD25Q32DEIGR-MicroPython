@@ -78,7 +78,7 @@ jobs:
           tag_name: ${{ env.LATEST_TAG }}
           name: MicroPython ${{ env.LATEST_TAG }} (ZD25Q32D Custom Build)
           body: |
-            针对 ZD25Q32D / ZD25Q32DEIGR Flash 芯片定制的 MicroPython 固件。
-            （修改项：在 CMake 配置中强行开启 PICO_EMBED_XIP_SETUP=1 并将 Flash SPI 时钟分频降至 4）
+            针对 ZD25Q32D / ZD25Q32DEIGR 4MB Flash 通用 MicroPython 固件。
+            （兼容更多第三方FLASH的PICO2开发版）
             对应官方上游版本：${{ env.LATEST_TAG }}
           files: ${{ env.TARGET_FILENAME }}
