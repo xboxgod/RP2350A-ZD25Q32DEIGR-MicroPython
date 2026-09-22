@@ -1,4 +1,4 @@
-name: Auto Build MicroPython for ZD25Q32D
+name: Auto Build MicroPython for RP2350A 4MB Flash
 
 on:
   schedule:
@@ -17,7 +17,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           LATEST_TAG=$(curl -s -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/micropython/micropython/releases/latest | jq -r .tag_name)
-          if [ "$LATEST_TAG" = "null" ] || [ -z "$LATEST_TAG" ]; then
+          if [ "$LATEST_TAG" = "null" ] \vert{}\vert{} [ -z "$LATEST_TAG" ]; then
             echo "获取最新版本失败！"
             exit 1
           fi
@@ -58,23 +58,18 @@ jobs:
           make -C mpy-cross
           make -C ports/rp2 submodules
 
-      - name: Patch Board Config for ZD25Q32D (Dual-SPI Mode & Clock Div)
+      - name: Patch Board Config for ZD25WQ32C (4MB Flash & Dual-SPI)
         if: env.SKIP != 'true'
         run: |
-          BOARD_HEADER="ports/rp2/boards/RPI_PICO2/mpconfigboard.h"
           BOARD_CMAKE="ports/rp2/boards/RPI_PICO2/mpconfigboard.cmake"
 
-          # 1. 在 mpconfigboard.h 中强制指定 SPI 4分频 (约 37.5MHz)，提高信号容错率
-          echo "" >> $BOARD_HEADER
-          echo "// ZD25Q32D Custom Flash Fix" >> $BOARD_HEADER
-          echo "#ifndef PICO_FLASH_SPI_CLKDIV" >> $BOARD_HEADER
-          echo "#define PICO_FLASH_SPI_CLKDIV 4" >> $BOARD_HEADER
-          echo "#endif" >> $BOARD_HEADER
+          # 1. 修正 Flash 容量为 4MB (32Mbit = 4194304 字节)
+          # 解决 MicroPython 默认按照 8MB 挂载 LittleFS 文件系统时产生的越界 HardFault 崩溃
+          echo "set(PICO_FLASH_SIZE_BYTES 4194304)" >> $BOARD_CMAKE
 
-          # 2. 修改 RP2350 镜像头的 Flash 传输模式为 Dual-SPI (双线模式)
-          # 规避 ZD25Q32D 出厂 QE 位为 0 导致 4 线 QSPI 启动死锁的问题
+          # 2. 修改 RP2350 镜像头传输模式为 Dual-SPI (双线模式)
+          # 解决国产 Flash 出厂 QE=0 导致的 4 线 QSPI 开机 BootROM 死锁
           echo "set(PICO_FLASH_MODE \"dual\")" >> $BOARD_CMAKE
-          echo "add_compile_definitions(PICO_FLASH_SPI_CLKDIV=4)" >> $BOARD_CMAKE
 
       - name: Compile RP2350 Firmware
         if: env.SKIP != 'true'
@@ -85,7 +80,7 @@ jobs:
       - name: Prepare Named UF2 File
         if: env.SKIP != 'true'
         run: |
-          TARGET_FILENAME="RPI_PICO2_ZD25Q32DEIGR-${BUILD_DATE}-${LATEST_TAG}.uf2"
+          TARGET_FILENAME="RPI_PICO2_ZD25WQ32C_4MB-${BUILD_DATE}-${LATEST_TAG}.uf2"
           mv ports/rp2/build-RPI_PICO2/firmware.uf2 "${TARGET_FILENAME}"
           echo "TARGET_FILENAME=${TARGET_FILENAME}" >> $GITHUB_ENV
 
@@ -94,9 +89,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.LATEST_TAG }}
-          name: MicroPython ${{ env.LATEST_TAG }} (ZD25Q32D Custom Build)
+          name: MicroPython ${{ env.LATEST_TAG }} (RP2350A 4MB Dual-SPI)
           body: |
-            针对 ZD25Q32D / ZD25Q32DEIGR 4MB Flash 通用 MicroPython 固件。
-            （修改项：切换 Flash 传输模式为 Dual-SPI，解决出厂 QE=0 导致的开机死锁；SPI 时钟分频降至 4）
+            针对 RP2350A + 4MB (32Mbit) ZD25Q32DEIGR 32Mbit 之类FLASH 在官方原版 MicroPython 出现BUG/锁死/无响应等问题的自动Patch固件：
+            1. 修正容量限制为 4MB (`PICO_FLASH_SIZE_BYTES=4194304`)，修复 LittleFS 越界挂载导致的卡死；
+            2. 传输模式切换为 Dual-SPI (`PICO_FLASH_MODE=dual`)，避开 Flash 出厂 QE=0 导致的开机死锁；
+            3. 保持官方 75MHz 高速 Clock 运行。
             对应官方上游版本：${{ env.LATEST_TAG }}
           files: ${{ env.TARGET_FILENAME }}
