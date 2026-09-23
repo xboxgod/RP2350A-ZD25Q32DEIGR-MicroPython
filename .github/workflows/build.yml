@@ -58,33 +58,32 @@ jobs:
           make -C mpy-cross
           make -C ports/rp2 submodules
 
-      - name: Patch Board Config for ZD25WQ32C (4MB Flash & Dual-SPI)
+      - name: Patch Board Headers and Board Cmake
         if: env.SKIP != 'true'
         run: |
+          # 1. 修改 C 语言头文件，彻底修正 MicroPython LittleFS 文件系统大小为 4MB (4194304)
+          BOARD_H="ports/rp2/boards/RPI_PICO2/mpconfigboard.h"
+          echo "" >> $BOARD_H
+          echo "#undef PICO_FLASH_SIZE_BYTES" >> $BOARD_H
+          echo "#define PICO_FLASH_SIZE_BYTES (4 * 1024 * 1024)" >> $BOARD_H
+
+          # 2. 修改 CMake 文件（对齐 CircuitPython 兼容模式）
           BOARD_CMAKE="ports/rp2/boards/RPI_PICO2/mpconfigboard.cmake"
-
-          # 1. 修正 Flash 容量为 4MB (32Mbit = 4194304 字节)
-          # 修复 MicroPython 默认按 8MB 挂载 LittleFS 文件系统时导致的越界硬崩溃
-          echo "set(PICO_FLASH_SIZE_BYTES 4194304)" >> $BOARD_CMAKE
-
-          # 2. 修正 RP2350 镜像头传输模式为双线 Dual-SPI 模式 (Pico SDK 2.x 标准语法)
-          # 解决国产 Flash 出厂 QE=0 导致 4 线 QSPI 读取全 0xFF 引发的 BootROM 死锁
-          echo "set(PICO_FLASH_MODE \"qspi_dual_i_o_read\")" >> $BOARD_CMAKE
-
-          # 3. 降低 Flash 时钟分频至 37.5MHz (150MHz / 4)
-          # 解决 3.3V 国产 Flash 在 75MHz 高频双线模式下的时序丢步问题
-          echo "set(PICO_FLASH_SPI_CLKDIV 4)" >> $BOARD_CMAKE
+          echo "set(PICO_FLASH_SIZE_BYTES 4194304 CACHE STRING \"\" FORCE)" >> $BOARD_CMAKE
+          echo "set(PICO_FLASH_MODE \"qspi_fast_read\" CACHE STRING \"\" FORCE)" >> $BOARD_CMAKE
+          echo "set(PICO_FLASH_SPI_CLKDIV 4 CACHE STRING \"\" FORCE)" >> $BOARD_CMAKE
 
       - name: Compile RP2350 Firmware
         if: env.SKIP != 'true'
         run: |
           cd ports/rp2
-          make BOARD=RPI_PICO2
+          # 3. 通过 CMAKE_ARGS 参数将环境变量直接推入 CMake 顶层，防止 Pico SDK 覆盖
+          make BOARD=RPI_PICO2 CMAKE_ARGS="-DPICO_FLASH_SIZE_BYTES=4194304 -DPICO_FLASH_MODE=qspi_fast_read -DPICO_FLASH_SPI_CLKDIV=4"
 
       - name: Prepare Named UF2 File
         if: env.SKIP != 'true'
         run: |
-          TARGET_FILENAME="RPI_PICO2_ZD25WQ32C_4MB-${BUILD_DATE}-${LATEST_TAG}.uf2"
+          TARGET_FILENAME="RPI_PICO2_ZD25Q32D_4MB_FASTREAD-${BUILD_DATE}-${LATEST_TAG}.uf2"
           mv ports/rp2/build-RPI_PICO2/firmware.uf2 "${TARGET_FILENAME}"
           echo "TARGET_FILENAME=${TARGET_FILENAME}" >> $GITHUB_ENV
 
@@ -93,11 +92,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.LATEST_TAG }}
-          name: MicroPython ${{ env.LATEST_TAG }} (RP2350A 4MB Dual-SPI)
+          name: MicroPython ${{ env.LATEST_TAG }} (RP2350A 4MB ZD25Q32D Fast-Read)
           body: |
-            针对 RP2350A + 4MB (32Mbit) ZD25Q32DEIGR 之类国产 SPI Flash 的自动 Patch 固件：
-            1. 修正容量限制为 4MB (`PICO_FLASH_SIZE_BYTES=4194304`)，修复文件系统越界挂载卡死；
-            2. 传输模式切换为 Dual-SPI (`PICO_FLASH_MODE=qspi_dual_i_o_read`)，避开 Flash 出厂 QE=0 导致的开机死锁；
-            3. 降低 Flash 时钟至 37.5MHz (`PICO_FLASH_SPI_CLKDIV=4`)，提升时序兼容性。
+            针对 RP2350A + Zetta ZD25Q32DEIGR (USON-8 4MB) Flash 的终极兼容固件：
+            1. 传输指令最大化为单线读写 Fast Read (`PICO_FLASH_MODE=qspi_fast_read` 0x0B 指令)，避开 0xBB 指令导致的 BootROM 死锁；
+            2. Flash 时钟修改为和CircuitPython相同的 37.5MHz (`PICO_FLASH_SPI_CLKDIV=4`)；
+            3. 修正 Flash 尺寸为 4MB，解决 LittleFS 挂载越界引起的 HardFault。
             对应官方上游版本：${{ env.LATEST_TAG }}
           files: ${{ env.TARGET_FILENAME }}
