@@ -58,17 +58,27 @@ jobs:
           make -C mpy-cross
           make -C ports/rp2 submodules
 
-      - name: Patch Board Headers and Board Cmake
+      - name: Create Isolated Custom Board (RP2350_4MB)
         if: env.SKIP != 'true'
         run: |
-          # 1. 修改 C 语言头文件，彻底修正 MicroPython LittleFS 文件系统大小为 4MB (4194304)
-          BOARD_H="ports/rp2/boards/RPI_PICO2/mpconfigboard.h"
+          # 1. 复制官方 RPI_PICO2 板级目录作为基础模板，独立为 RP2350_4MB
+          # 彻底隔离 Pico SDK 默认对 RPI_PICO2 强制注入的 8MB 参数与 SFDP 设置
+          cp -r ports/rp2/boards/RPI_PICO2 ports/rp2/boards/RP2350_4MB
+
+          BOARD_H="ports/rp2/boards/RP2350_4MB/mpconfigboard.h"
+          BOARD_CMAKE="ports/rp2/boards/RP2350_4MB/mpconfigboard.cmake"
+
+          # 2. 修改 mpconfigboard.h：重新声明 4MB 物理限制及 LittleFS 边界
           echo "" >> $BOARD_H
+          echo "#undef MICROPY_HW_BOARD_NAME" >> $BOARD_H
+          echo "#define MICROPY_HW_BOARD_NAME \"RP2350A 4MB\"" >> $BOARD_H
           echo "#undef PICO_FLASH_SIZE_BYTES" >> $BOARD_H
           echo "#define PICO_FLASH_SIZE_BYTES (4 * 1024 * 1024)" >> $BOARD_H
+          echo "#undef MICROPY_HW_FLASH_STORAGE_BYTES" >> $BOARD_H
+          echo "#define MICROPY_HW_FLASH_STORAGE_BYTES (PICO_FLASH_SIZE_BYTES - MICROPY_HW_FLASH_STORAGE_OFFSET)" >> $BOARD_H
 
-          # 2. 修改 CMake 文件（对齐 CircuitPython 兼容模式）
-          BOARD_CMAKE="ports/rp2/boards/RPI_PICO2/mpconfigboard.cmake"
+          # 3. 修改 mpconfigboard.cmake：强制使用与 CircuitPython 完全一致的单线 Fast Read 指令
+          sed -i 's/RPI_PICO2/RP2350_4MB/g' $BOARD_CMAKE
           echo "set(PICO_FLASH_SIZE_BYTES 4194304 CACHE STRING \"\" FORCE)" >> $BOARD_CMAKE
           echo "set(PICO_FLASH_MODE \"qspi_fast_read\" CACHE STRING \"\" FORCE)" >> $BOARD_CMAKE
           echo "set(PICO_FLASH_SPI_CLKDIV 4 CACHE STRING \"\" FORCE)" >> $BOARD_CMAKE
@@ -77,14 +87,14 @@ jobs:
         if: env.SKIP != 'true'
         run: |
           cd ports/rp2
-          # 3. 通过 CMAKE_ARGS 参数将环境变量直接推入 CMake 顶层，防止 Pico SDK 覆盖
-          make BOARD=RPI_PICO2 CMAKE_ARGS="-DPICO_FLASH_SIZE_BYTES=4194304 -DPICO_FLASH_MODE=qspi_fast_read -DPICO_FLASH_SPI_CLKDIV=4"
+          # 使用新建的独立板级 RP2350_4MB 编译
+          make BOARD=RP2350_4MB
 
       - name: Prepare Named UF2 File
         if: env.SKIP != 'true'
         run: |
-          TARGET_FILENAME="RPI_PICO2_ZD25Q32D_4MB_FASTREAD-${BUILD_DATE}-${LATEST_TAG}.uf2"
-          mv ports/rp2/build-RPI_PICO2/firmware.uf2 "${TARGET_FILENAME}"
+          TARGET_FILENAME="RP2350A_4MB_FastRead-${BUILD_DATE}-${LATEST_TAG}.uf2"
+          mv ports/rp2/build-RP2350_4MB/firmware.uf2 "${TARGET_FILENAME}"
           echo "TARGET_FILENAME=${TARGET_FILENAME}" >> $GITHUB_ENV
 
       - name: Publish to GitHub Releases
@@ -92,11 +102,12 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.LATEST_TAG }}
-          name: MicroPython ${{ env.LATEST_TAG }} (RP2350A 4MB ZD25Q32D Fast-Read)
+          name: MicroPython ${{ env.LATEST_TAG }} (RP2350A 4MB Custom Board)
           body: |
-            针对 RP2350A + Zetta ZD25Q32DEIGR (USON-8 4MB) Flash 的终极兼容固件：
-            1. 传输指令最大化为单线读写 Fast Read (`PICO_FLASH_MODE=qspi_fast_read` 0x0B 指令)，避开 0xBB 指令导致的 BootROM 死锁；
-            2. Flash 时钟修改为和CircuitPython相同的 37.5MHz (`PICO_FLASH_SPI_CLKDIV=4`)；
-            3. 修正 Flash 尺寸为 4MB，解决 LittleFS 挂载越界引起的 HardFault。
+            针对 RP2350A + Zetta ZD25Q32D (USON-8 4MB) 国产 Flash 的独立板级编译固件：
+            1. 独立创建 `RP2350_4MB` 板级定义，避免官方 `RPI_PICO2` 配置覆盖；
+            2. 使用 CircuitPython 相同的 `qspi_fast_read` 单线 Fast Read 指令（0x0B），完全绕过不标准的 SFDP/QE 参数协商；
+            3. 锁定 Flash 容量为 4MB（`4194304` 字节），彻底消除 LittleFS 地址回卷；
+            4. Flash 时钟降低至 37.5MHz (`PICO_FLASH_SPI_CLKDIV=4`) 确保稳定性。
             对应官方上游版本：${{ env.LATEST_TAG }}
           files: ${{ env.TARGET_FILENAME }}
