@@ -1,111 +1,143 @@
-name: Auto Build MicroPython for RP2350A 4MB Flash
+name: Build MicroPython for RP2350A and ZD25Q32D
 
 on:
   schedule:
-    - cron: '0 0 * * *'
+    - cron: '17 2 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
+concurrency:
+  group: rp2350-zd25q32d-release
+  cancel-in-progress: false
+
 jobs:
-  check-and-build:
+  build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    timeout-minutes: 90
     steps:
-      - name: Fetch Latest MicroPython Release Info
-        id: get_latest
+      - name: Find latest upstream stable release
+        id: upstream
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
-          LATEST_TAG=$(curl -s -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/micropython/micropython/releases/latest | jq -r .tag_name)
-          if [ "$LATEST_TAG" = "null" ] \vert{}\vert{} [ -z "$LATEST_TAG" ]; then
-            echo "获取最新版本失败！"
+          set -euo pipefail
+          tag=$(gh api repos/micropython/micropython/releases/latest --jq '.tag_name')
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Unexpected MicroPython release tag: $tag" >&2
             exit 1
           fi
-          echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
-          BUILD_DATE=$(date +'%Y%m%d')
-          echo "BUILD_DATE=$BUILD_DATE" >> $GITHUB_ENV
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "release_tag=zd25q32d-$tag" >> "$GITHUB_OUTPUT"
 
-      - name: Check if Version Already Built
-        id: check_built
+      - name: Check whether this version was built
+        id: check
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.upstream.outputs.release_tag }}
+        shell: bash
         run: |
-          if gh release view "$LATEST_TAG" >/dev/null 2>&1; then
-            echo "版本 $LATEST_TAG 已存在，跳过编译。"
-            echo "SKIP=true" >> $GITHUB_ENV
+          set -euo pipefail
+          status=$(gh api -i "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" 2>/dev/null | head -n 1 || true)
+          if [[ "$status" == *' 200 '* ]]; then
+            echo 'build=false' >> "$GITHUB_OUTPUT"
+            echo "Release $RELEASE_TAG exists; skipping."
           else
-            echo "发现官方新版本 $LATEST_TAG，准备编译！"
-            echo "SKIP=false" >> $GITHUB_ENV
+            echo 'build=true' >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Checkout MicroPython Source Code
-        if: env.SKIP != 'true'
+      - name: Checkout MicroPython release and SDK
+        if: steps.check.outputs.build == 'true'
         uses: actions/checkout@v4
         with:
           repository: micropython/micropython
-          ref: ${{ env.LATEST_TAG }}
+          ref: ${{ steps.upstream.outputs.tag }}
           submodules: recursive
+          persist-credentials: false
 
-      - name: Install Build Dependencies
-        if: env.SKIP != 'true'
+      - name: Install build tools
+        if: steps.check.outputs.build == 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib cmake build-essential jq python3-pip python3-pyelftools
+          sudo apt-get install -y cmake gcc-arm-none-eabi libnewlib-arm-none-eabi build-essential python3
 
-      - name: Build mpy-cross and Fetch Submodules
-        if: env.SKIP != 'true'
+      - name: Create RP2350A board with generic 03h XIP
+        if: steps.check.outputs.build == 'true'
+        shell: bash
         run: |
-          make -C mpy-cross
+          set -euo pipefail
+          sdk=lib/pico-sdk
+          board=ports/rp2/boards/RP2350_ZD25Q32D
+          test -f "$sdk/src/rp2350/boot_stage2/boot2_generic_03h.S"
+          grep -q 'PICO_EMBED_XIP_SETUP=1' ports/rp2/CMakeLists.txt
+          test "$(cat ports/rp2/boards/RPI_PICO2/mpconfigboard.cmake | grep -c 'set(PICO_BOARD "pico2")')" -eq 1
+          test ! -e "$board"
+          mkdir -p "$board"
+          cat > "$board/mpconfigboard.cmake" <<'EOF'
+          set(PICO_BOARD "rp2350_zd25q32d")
+          # Select the RP2350-specific QMI 03h setup, including embedded XIP setup.
+          set(PICO_DEFAULT_BOOT_STAGE2 "boot2_generic_03h")
+          if(NOT DEFINED MICROPY_HW_FLASH_STORAGE_BYTES)
+              set(MICROPY_HW_FLASH_STORAGE_BYTES 3145728)
+          endif()
+          EOF
+          cat > "$board/mpconfigboard.h" <<'EOF'
+          #define MICROPY_HW_BOARD_NAME "RP2350A ZD25Q32D 03h"
+          EOF
+          cat > "$sdk/src/boards/include/boards/rp2350_zd25q32d.h" <<'EOF'
+          #ifndef _BOARDS_RP2350_ZD25Q32D_H
+          #define _BOARDS_RP2350_ZD25Q32D_H
+          // RP2350A with a 4 MiB external ZD25Q32D. No Pico 2-specific GPIOs.
+          pico_board_cmake_set(PICO_PLATFORM, rp2350)
+          #define PICO_RP2350A 1
+          #define PICO_BOOT_STAGE2_CHOOSE_GENERIC_03H 1
+          #define PICO_FLASH_SPI_CLKDIV 12
+          pico_board_cmake_set_default(PICO_FLASH_SIZE_BYTES, (4 * 1024 * 1024))
+          #ifndef PICO_FLASH_SIZE_BYTES
+          #define PICO_FLASH_SIZE_BYTES (4 * 1024 * 1024)
+          #endif
+          #endif
+          EOF
+          grep -q 'PICO_BOOT_STAGE2_CHOOSE_GENERIC_03H 1' "$sdk/src/boards/include/boards/rp2350_zd25q32d.h"
+          ! grep -q 'PICO_BOOT_STAGE2_CHOOSE_W25Q080' "$sdk/src/boards/include/boards/rp2350_zd25q32d.h"
+
+      - name: Compile firmware
+        if: steps.check.outputs.build == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -C mpy-cross -j 2
           make -C ports/rp2 submodules
+          make -C ports/rp2 BOARD=RP2350_ZD25Q32D -j 2
+          cache=ports/rp2/build-RP2350_ZD25Q32D/CMakeCache.txt
+          grep -q 'PICO_BOARD:STRING=rp2350_zd25q32d' "$cache" || grep -q 'PICO_BOARD:UNINITIALIZED=rp2350_zd25q32d' "$cache"
+          grep -Eq 'PICO_DEFAULT_BOOT_STAGE2:STRING=boot2_generic_03h|PICO_DEFAULT_BOOT_STAGE2:UNINITIALIZED=boot2_generic_03h' "$cache"
+          test -s ports/rp2/build-RP2350_ZD25Q32D/firmware.uf2
+          cp ports/rp2/build-RP2350_ZD25Q32D/firmware.uf2 "RP2350A-ZD25Q32D-03h-${{ steps.upstream.outputs.tag }}.uf2"
+          sha256sum "RP2350A-ZD25Q32D-03h-${{ steps.upstream.outputs.tag }}.uf2" > SHA256SUMS.txt
 
-      - name: Create Isolated Custom Board (RP2350_4MB)
-        if: env.SKIP != 'true'
+      - name: Publish successful build
+        if: steps.check.outputs.build == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_TAG: ${{ steps.upstream.outputs.tag }}
+          RELEASE_TAG: ${{ steps.upstream.outputs.release_tag }}
+        shell: bash
         run: |
-          # 1. 复制官方 RPI_PICO2 板级目录作为基础模板，独立为 RP2350_4MB
-          cp -r ports/rp2/boards/RPI_PICO2 ports/rp2/boards/RP2350_4MB
+          set -euo pipefail
+          cat > release-notes.txt <<EOF
+          MicroPython upstream: ${UPSTREAM_TAG}
+          Target: custom RP2350A board with Zetta ZD25Q32D, 4 MiB SPI NOR.
+          RP2350 QMI XIP setup: generic 03h serial read, CLKDIV=12.
+          Filesystem allocation: 3 MiB; remaining 1 MiB reserved for firmware.
 
-          BOARD_H="ports/rp2/boards/RP2350_4MB/mpconfigboard.h"
-          BOARD_CMAKE="ports/rp2/boards/RP2350_4MB/mpconfigboard.cmake"
-
-          # 2. 修改 mpconfigboard.h：仅重定义 PICO_FLASH_SIZE_BYTES 为 4MB (4194304)
-          # MicroPython 底层会自动推算 LittleFS 存储区，避免预声明未定义变量引起的语法错误
-          echo "" >> $BOARD_H
-          echo "#undef MICROPY_HW_BOARD_NAME" >> $BOARD_H
-          echo "#define MICROPY_HW_BOARD_NAME \"RP2350A 4MB\"" >> $BOARD_H
-          echo "#undef PICO_FLASH_SIZE_BYTES" >> $BOARD_H
-          echo "#define PICO_FLASH_SIZE_BYTES (4 * 1024 * 1024)" >> $BOARD_H
-
-          # 3. 修改 mpconfigboard.cmake：强制使用纯单线 SPI 模式并设置时钟分频
-          sed -i 's/RPI_PICO2/RP2350_4MB/g' $BOARD_CMAKE
-          echo "set(PICO_FLASH_SIZE_BYTES 4194304 CACHE STRING \"\" FORCE)" >> $BOARD_CMAKE
-          echo "set(PICO_FLASH_MODE \"spi\" CACHE STRING \"\" FORCE)" >> $BOARD_CMAKE
-          echo "set(PICO_FLASH_SPI_CLKDIV 4 CACHE STRING \"\" FORCE)" >> $BOARD_CMAKE
-
-      - name: Compile RP2350 Firmware
-        if: env.SKIP != 'true'
-        run: |
-          cd ports/rp2
-          make BOARD=RP2350_4MB
-
-      - name: Prepare Named UF2 File
-        if: env.SKIP != 'true'
-        run: |
-          # 修改了输出文件名，将 FastRead 更改为 SPI，以匹配纯单线模式
-          TARGET_FILENAME="RP2350A_4MB_SPI-${BUILD_DATE}-${LATEST_TAG}.uf2"
-          mv ports/rp2/build-RP2350_4MB/firmware.uf2 "${TARGET_FILENAME}"
-          echo "TARGET_FILENAME=${TARGET_FILENAME}" >> $GITHUB_ENV
-
-      - name: Publish to GitHub Releases
-        if: env.SKIP != 'true'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.LATEST_TAG }}
-          name: MicroPython ${{ env.LATEST_TAG }} (RP2350A 4MB Custom Board)
-          body: |
-            针对 RP2350A + Zetta ZD25Q32D (USON-8 4MB) 国产 Flash 的独立板级编译固件：
-            1. 修正编译头文件包含层级，修复 `MICROPY_HW_FLASH_STORAGE_OFFSET` 编译报错；
-            2. 强制使用纯单线 `spi` 模式，彻底避开 Flash QE 位未开启导致的 IO3(/HOLD) 引脚硬件挂起死机问题；
-            3. 锁定 Flash 容量为 4MB（`4194304` 字节），彻底消除 LittleFS 地址回卷；
-            4. Flash 时钟降低至 37.5MHz (`PICO_FLASH_SPI_CLKDIV=4`) 确保稳定性。
-            对应官方上游版本：${{ env.LATEST_TAG }}
-          files: ${{ env.TARGET_FILENAME }}
+          Experimental build: compilation is checked automatically; USB boot and
+          flash stability must be verified on real hardware before general use.
+          EOF
+          gh release create "$RELEASE_TAG" \
+            "RP2350A-ZD25Q32D-03h-${UPSTREAM_TAG}.uf2" SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "RP2350A ZD25Q32D MicroPython ${UPSTREAM_TAG} (03h)" \
+            --notes-file release-notes.txt --prerelease
