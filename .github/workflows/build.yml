@@ -4,6 +4,17 @@ on:
   schedule:
     - cron: '0 0 * * *'
   workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: '强制重新编译 (无视已发布的 Release)'
+        required: false
+        type: boolean
+        default: false
+
+# 锁定并发组：同一仓库下如果有新任务被触发，改为排队等待，防止互相取消
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -22,18 +33,33 @@ jobs:
             exit 1
           fi
           echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
-          echo "BUILD_DATE=$(date +'\%Y\%m\%d')" >> $GITHUB_ENV
 
       - name: Check if Version Already Built
         id: check_built
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if gh release view "zd25q32d-$LATEST_TAG" >/dev/null 2>&1; then
-            echo "版本 zd25q32d-$LATEST_TAG 已存在，跳过编译。"
-            echo "SKIP=true" >> $GITHUB_ENV
-          else
+          FORCE_REBUILD="${{ inputs.force_rebuild }}"
+          if [ "$FORCE_REBUILD" = "true" ]; then
+            echo "手动触发强制重编，跳过版本存在检查。"
             echo "SKIP=false" >> $GITHUB_ENV
+          else
+            # 使用原生 API 提取 HTTP 状态码，彻底摆脱 grep 文本匹配的脆弱性
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/zd25q32d-$LATEST_TAG)
+            
+            if [ "$HTTP_STATUS" = "200" ]; then
+              echo "版本 zd25q32d-$LATEST_TAG 已存在，跳过编译。"
+              echo "SKIP=true" >> $GITHUB_ENV
+            elif [ "$HTTP_STATUS" = "404" ]; then
+              echo "确认版本未发布 (404 未找到)，准备编译。"
+              echo "SKIP=false" >> $GITHUB_ENV
+            else
+              echo "GitHub API 异常 (HTTP $HTTP_STATUS)，停止构建防止误触发。"
+              exit 1
+            fi
           fi
 
       - name: Checkout MicroPython Source Code
@@ -56,44 +82,55 @@ jobs:
           make -C mpy-cross -j$(nproc)
           make -C ports/rp2 submodules
 
-      - name: Create Custom SDK Board Profile
+      - name: Create Custom SDK & MicroPython Board Profiles
         if: env.SKIP != 'true'
         run: |
-          # 1. 注入 Pico SDK 层的自定义板级头文件 (核心关键步骤)
           mkdir -p lib/pico-sdk/src/boards/include/boards
           cat << 'EOF' > lib/pico-sdk/src/boards/include/boards/rp2350_zd25q32d.h
           #ifndef _BOARDS_RP2350_ZD25Q32D_H
           #define _BOARDS_RP2350_ZD25Q32D_H
           
-          // 重要：必须写为注释，供 CMake 正则解析平台类型，不能当做 C 代码编译！
-          // pico_board_cmake_set(PICO_PLATFORM, rp2350)
+          pico_board_cmake_set(PICO_PLATFORM, rp2350)
+          pico_board_cmake_set_default(PICO_FLASH_SIZE_BYTES, (4 * 1024 * 1024))
           
           #define PICO_RP2350A 1
           
-          // 实验性测试：强制启用通用 03h 单线模式 Boot2 及分频设置
           #define PICO_BOOT_STAGE2_CHOOSE_GENERIC_03H 1
           #define PICO_FLASH_SPI_CLKDIV 8
+          #ifndef PICO_FLASH_SIZE_BYTES
           #define PICO_FLASH_SIZE_BYTES (4 * 1024 * 1024)
+          #endif
           
-          // 在 SDK 底层将 I2C0 引脚映射到 GPIO0, GPIO1
           #define PICO_DEFAULT_I2C 0
           #define PICO_DEFAULT_I2C_SDA_PIN 0
           #define PICO_DEFAULT_I2C_SCL_PIN 1
           
-          // 刻意不定义 PICO_DEFAULT_LED_PIN，从而彻底释放 GPIO25
+          #define PICO_DEFAULT_SPI 0
+          #define PICO_DEFAULT_SPI_SCK_PIN 18
+          #define PICO_DEFAULT_SPI_TX_PIN 19
+          #define PICO_DEFAULT_SPI_RX_PIN 16
+          #define PICO_DEFAULT_SPI_CSN_PIN 17
+          
+          #define PICO_DEFAULT_UART 0
+          #define PICO_DEFAULT_UART_TX_PIN 12
+          #define PICO_DEFAULT_UART_RX_PIN 13
+          
           #endif
           EOF
           
-          # 2. 创建 MicroPython 板级目录，关联至刚建立的 SDK 配置
           mkdir -p ports/rp2/boards/RP2350_ZD25Q32D
           
           cat << 'EOF' > ports/rp2/boards/RP2350_ZD25Q32D/mpconfigboard.cmake
           set(PICO_BOARD "rp2350_zd25q32d")
+          set(PICO_DEFAULT_BOOT_STAGE2 "boot2_generic_03h")
           set(MICROPY_HW_FLASH_STORAGE_BYTES 3145728)
           EOF
           
           cat << 'EOF' > ports/rp2/boards/RP2350_ZD25Q32D/mpconfigboard.h
           #define MICROPY_HW_BOARD_NAME "RP2350A ZD25Q32D Custom"
+          
+          #define MICROPY_HW_UART0_TX (12)
+          #define MICROPY_HW_UART0_RX (13)
           EOF
 
       - name: Compile RP2350 Firmware
@@ -105,7 +142,7 @@ jobs:
       - name: Prepare Named UF2 File
         if: env.SKIP != 'true'
         run: |
-          TARGET_FILENAME="RP2350A_ZD25Q32D_03h-${BUILD_DATE}-${LATEST_TAG}.uf2"
+          TARGET_FILENAME="RP2350A_ZD25Q32D_03h-${LATEST_TAG}.uf2"
           mv ports/rp2/build-RP2350_ZD25Q32D/firmware.uf2 "${TARGET_FILENAME}"
           echo "TARGET_FILENAME=${TARGET_FILENAME}" >> $GITHUB_ENV
 
@@ -114,13 +151,16 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: zd25q32d-${{ env.LATEST_TAG }}
-          name: MicroPython ${{ env.LATEST_TAG }} (ZD25Q32D 实验性修复)
-          body: |
-            【实验性测试版本】针对定制 RP2350A 核心板 (ZD25Q32D 4MB) 编译。
-            此版本尚未经过实板验证，仅用于测试排查硬件启动死机问题。
-            
-            技术变更：
-            1. **Boot2 降级 (测试)**：在 SDK 层强制替换 Boot Stage 2 为 `boot2_generic_03h`，验证是否能绕开 Flash 未开启 QE 位导致的硬件挂起。
-            2. **I2C 映射**：底层默认 I2C0 配置为 SDA (Pin 0) / SCL (Pin 1)。
-            3. **IO 释放**：移除了系统默认 LED 绑定，完全释放 GPIO 25 供自由调用。
+          name: MicroPython ${{ env.LATEST_TAG }} (ZD25Q32D 诊断构建版)
+          prerelease: true
+          fail_on_unmatched_files: true
           files: ${{ env.TARGET_FILENAME }}
+          body: |
+            【诊断与测试构建】针对定制 RP2350A 核心板 (ZD25Q32D 4MB) 编译。
+            *注意：此版本用于测试 Flash 引导兼容性，03h 模式能否彻底解决 USB 消失/死机问题仍需实板验证。*
+            
+            板级配置项：
+            1. **Boot2 引导**：强制使用 `boot2_generic_03h`。
+            2. **I2C 默认引脚**：I2C0 SDA = 0, SCL = 1。
+            3. **UART 默认引脚**：UART0 TX = 12, RX = 13 (匹配定制板硬件规划)。
+            4. **通用 IO 释放**：解除 GPIO25 作为默认系统状态灯的绑定。
