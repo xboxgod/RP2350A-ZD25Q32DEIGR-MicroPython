@@ -75,10 +75,10 @@ jobs:
           echo "#undef PICO_FLASH_SIZE_BYTES" >> $BOARD_H
           echo "#define PICO_FLASH_SIZE_BYTES (4 * 1024 * 1024)" >> $BOARD_H
 
-          # 3. 修改 mpconfigboard.cmake：切换为 Fast Read 单线模式并设置时钟分频
+          # 3. 修改 mpconfigboard.cmake：强制使用纯单线 SPI 模式并设置时钟分频
           sed -i 's/RPI_PICO2/RP2350_4MB/g' $BOARD_CMAKE
           echo "set(PICO_FLASH_SIZE_BYTES 4194304 CACHE STRING \"\" FORCE)" >> $BOARD_CMAKE
-          echo "set(PICO_FLASH_MODE \"qspi_fast_read\" CACHE STRING \"\" FORCE)" >> $BOARD_CMAKE
+          echo "set(PICO_FLASH_MODE \"spi\" CACHE STRING \"\" FORCE)" >> $BOARD_CMAKE
           echo "set(PICO_FLASH_SPI_CLKDIV 4 CACHE STRING \"\" FORCE)" >> $BOARD_CMAKE
 
       - name: Compile RP2350 Firmware
@@ -90,7 +90,8 @@ jobs:
       - name: Prepare Named UF2 File
         if: env.SKIP != 'true'
         run: |
-          TARGET_FILENAME="RP2350A_4MB_FastRead-${BUILD_DATE}-${LATEST_TAG}.uf2"
+          # 修改了输出文件名，将 FastRead 更改为 SPI，以匹配纯单线模式
+          TARGET_FILENAME="RP2350A_4MB_SPI-${BUILD_DATE}-${LATEST_TAG}.uf2"
           mv ports/rp2/build-RP2350_4MB/firmware.uf2 "${TARGET_FILENAME}"
           echo "TARGET_FILENAME=${TARGET_FILENAME}" >> $GITHUB_ENV
 
@@ -101,10 +102,10 @@ jobs:
           tag_name: ${{ env.LATEST_TAG }}
           name: MicroPython ${{ env.LATEST_TAG }} (RP2350A 4MB Custom Board)
           body: |
-            针对 RP2350A + Zetta ZD25Q32D (USON-8 4MB) Flash 的独立板级编译固件：
+            针对 RP2350A + Zetta ZD25Q32D (USON-8 4MB) 国产 Flash 的独立板级编译固件：
             1. 修正编译头文件包含层级，修复 `MICROPY_HW_FLASH_STORAGE_OFFSET` 编译报错；
-            2. 使用 `qspi_fast_read` 单线 Fast Read 指令（0x0B），避开开机 BootROM 锁死；
+            2. 强制使用纯单线 `spi` 模式，彻底避开 Flash QE 位未开启导致的 IO3(/HOLD) 引脚硬件挂起死机问题；
             3. 锁定 Flash 容量为 4MB（`4194304` 字节），彻底消除 LittleFS 地址回卷；
-            4. Flash 时钟预设 37.5MHz (`PICO_FLASH_SPI_CLKDIV=4`) 确保兼容性；
+            4. Flash 时钟降低至 37.5MHz (`PICO_FLASH_SPI_CLKDIV=4`) 确保稳定性。
             对应官方上游版本：${{ env.LATEST_TAG }}
           files: ${{ env.TARGET_FILENAME }}
