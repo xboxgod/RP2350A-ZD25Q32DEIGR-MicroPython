@@ -62,22 +62,20 @@ jobs:
         if: env.SKIP != 'true'
         run: |
           # 1. 复制官方 RPI_PICO2 板级目录作为基础模板，独立为 RP2350_4MB
-          # 彻底隔离 Pico SDK 默认对 RPI_PICO2 强制注入的 8MB 参数与 SFDP 设置
           cp -r ports/rp2/boards/RPI_PICO2 ports/rp2/boards/RP2350_4MB
 
           BOARD_H="ports/rp2/boards/RP2350_4MB/mpconfigboard.h"
           BOARD_CMAKE="ports/rp2/boards/RP2350_4MB/mpconfigboard.cmake"
 
-          # 2. 修改 mpconfigboard.h：重新声明 4MB 物理限制及 LittleFS 边界
+          # 2. 修改 mpconfigboard.h：仅重定义 PICO_FLASH_SIZE_BYTES 为 4MB (4194304)
+          # MicroPython 底层会自动推算 LittleFS 存储区，避免预声明未定义变量引起的语法错误
           echo "" >> $BOARD_H
           echo "#undef MICROPY_HW_BOARD_NAME" >> $BOARD_H
           echo "#define MICROPY_HW_BOARD_NAME \"RP2350A 4MB\"" >> $BOARD_H
           echo "#undef PICO_FLASH_SIZE_BYTES" >> $BOARD_H
           echo "#define PICO_FLASH_SIZE_BYTES (4 * 1024 * 1024)" >> $BOARD_H
-          echo "#undef MICROPY_HW_FLASH_STORAGE_BYTES" >> $BOARD_H
-          echo "#define MICROPY_HW_FLASH_STORAGE_BYTES (PICO_FLASH_SIZE_BYTES - MICROPY_HW_FLASH_STORAGE_OFFSET)" >> $BOARD_H
 
-          # 3. 修改 mpconfigboard.cmake：强制使用与 CircuitPython 完全一致的单线 Fast Read 指令
+          # 3. 修改 mpconfigboard.cmake：切换为 Fast Read 单线模式并设置时钟分频
           sed -i 's/RPI_PICO2/RP2350_4MB/g' $BOARD_CMAKE
           echo "set(PICO_FLASH_SIZE_BYTES 4194304 CACHE STRING \"\" FORCE)" >> $BOARD_CMAKE
           echo "set(PICO_FLASH_MODE \"qspi_fast_read\" CACHE STRING \"\" FORCE)" >> $BOARD_CMAKE
@@ -87,7 +85,6 @@ jobs:
         if: env.SKIP != 'true'
         run: |
           cd ports/rp2
-          # 使用新建的独立板级 RP2350_4MB 编译
           make BOARD=RP2350_4MB
 
       - name: Prepare Named UF2 File
@@ -104,10 +101,10 @@ jobs:
           tag_name: ${{ env.LATEST_TAG }}
           name: MicroPython ${{ env.LATEST_TAG }} (RP2350A 4MB Custom Board)
           body: |
-            针对 RP2350A + Zetta ZD25Q32D (USON-8 4MB) 国产 Flash 的独立板级编译固件：
-            1. 独立创建 `RP2350_4MB` 板级定义，避免官方 `RPI_PICO2` 配置覆盖；
-            2. 使用 CircuitPython 相同的 `qspi_fast_read` 单线 Fast Read 指令（0x0B），完全绕过不标准的 SFDP/QE 参数协商；
+            针对 RP2350A + Zetta ZD25Q32D (USON-8 4MB) Flash 的独立板级编译固件：
+            1. 修正编译头文件包含层级，修复 `MICROPY_HW_FLASH_STORAGE_OFFSET` 编译报错；
+            2. 使用 `qspi_fast_read` 单线 Fast Read 指令（0x0B），避开开机 BootROM 锁死；
             3. 锁定 Flash 容量为 4MB（`4194304` 字节），彻底消除 LittleFS 地址回卷；
-            4. Flash 时钟降低至 37.5MHz (`PICO_FLASH_SPI_CLKDIV=4`) 确保稳定性。
+            4. Flash 时钟预设 37.5MHz (`PICO_FLASH_SPI_CLKDIV=4`) 确保兼容性；
             对应官方上游版本：${{ env.LATEST_TAG }}
           files: ${{ env.TARGET_FILENAME }}
