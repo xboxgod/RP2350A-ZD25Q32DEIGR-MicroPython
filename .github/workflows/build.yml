@@ -1,4 +1,4 @@
-name: Build MicroPython for Custom RP2350A (ZD25Q32D)
+name: Build Custom RP2350A (ZD25Q32D)
 
 on:
   schedule:
@@ -24,7 +24,20 @@ jobs:
           echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
           echo "BUILD_DATE=$(date +'\%Y\%m\%d')" >> $GITHUB_ENV
 
+      - name: Check if Version Already Built
+        id: check_built
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "zd25q32d-$LATEST_TAG" >/dev/null 2>&1; then
+            echo "版本 zd25q32d-$LATEST_TAG 已存在，跳过编译。"
+            echo "SKIP=true" >> $GITHUB_ENV
+          else
+            echo "SKIP=false" >> $GITHUB_ENV
+          fi
+
       - name: Checkout MicroPython Source Code
+        if: env.SKIP != 'true'
         uses: actions/checkout@v4
         with:
           repository: micropython/micropython
@@ -32,69 +45,82 @@ jobs:
           submodules: recursive
 
       - name: Install Build Dependencies
-        # 补全了固件签名必须的 python3-pyelftools 和 libc 库，防止打包 UF2 时报错
+        if: env.SKIP != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib cmake build-essential python3 python3-pip python3-pyelftools
 
       - name: Build mpy-cross and Fetch Submodules
+        if: env.SKIP != 'true'
         run: |
           make -C mpy-cross -j$(nproc)
           make -C ports/rp2 submodules
 
-      - name: Create Custom Board Profile
+      - name: Create Custom SDK Board Profile
+        if: env.SKIP != 'true'
         run: |
-          # 1. 复制官方 RPI_PICO2 目录作为基础，继承完整的 RP2350 系统级参数
-          cp -r ports/rp2/boards/RPI_PICO2 ports/rp2/boards/RP2350_ZD25Q32D
-          BOARD_CMAKE="ports/rp2/boards/RP2350_ZD25Q32D/mpconfigboard.cmake"
-          BOARD_H="ports/rp2/boards/RP2350_ZD25Q32D/mpconfigboard.h"
-
-          # 2. 修改 CMake：强行指定底层 Boot2 为 generic_03h，避开 Flash 硬件锁死坑
-          sed -i 's/RPI_PICO2/RP2350_ZD25Q32D/g' $BOARD_CMAKE
-          echo 'set(PICO_DEFAULT_BOOT_STAGE2 "boot2_generic_03h" CACHE STRING "" FORCE)' >> $BOARD_CMAKE
-          echo 'set(PICO_FLASH_SIZE_BYTES 4194304 CACHE STRING "" FORCE)' >> $BOARD_CMAKE
-          echo 'set(PICO_FLASH_SPI_CLKDIV 8 CACHE STRING "" FORCE)' >> $BOARD_CMAKE
-
-          # 3. 修改头文件：精准删除原生定义，换上您的定制引脚
-          # 用 sed 删除官方默认的板载 LED 和默认 I2C 定义
-          sed -i '/MICROPY_HW_LED_STATUS/d' $BOARD_H
-          sed -i '/MICROPY_HW_I2C0_SDA/d' $BOARD_H
-          sed -i '/MICROPY_HW_I2C0_SCL/d' $BOARD_H
-          sed -i '/MICROPY_HW_BOARD_NAME/d' $BOARD_H
-
-          # 追加您专属的硬件配置
-          cat <<EOF >> $BOARD_H
+          # 1. 注入 Pico SDK 层的自定义板级头文件 (核心关键步骤)
+          mkdir -p lib/pico-sdk/src/boards/include/boards
+          cat << 'EOF' > lib/pico-sdk/src/boards/include/boards/rp2350_zd25q32d.h
+          #ifndef _BOARDS_RP2350_ZD25Q32D_H
+          #define _BOARDS_RP2350_ZD25Q32D_H
           
+          // 重要：必须写为注释，供 CMake 正则解析平台类型，不能当做 C 代码编译！
+          // pico_board_cmake_set(PICO_PLATFORM, rp2350)
+          
+          #define PICO_RP2350A 1
+          
+          // 实验性测试：强制启用通用 03h 单线模式 Boot2 及分频设置
+          #define PICO_BOOT_STAGE2_CHOOSE_GENERIC_03H 1
+          #define PICO_FLASH_SPI_CLKDIV 8
+          #define PICO_FLASH_SIZE_BYTES (4 * 1024 * 1024)
+          
+          // 在 SDK 底层将 I2C0 引脚映射到 GPIO0, GPIO1
+          #define PICO_DEFAULT_I2C 0
+          #define PICO_DEFAULT_I2C_SDA_PIN 0
+          #define PICO_DEFAULT_I2C_SCL_PIN 1
+          
+          // 刻意不定义 PICO_DEFAULT_LED_PIN，从而彻底释放 GPIO25
+          #endif
+          EOF
+          
+          # 2. 创建 MicroPython 板级目录，关联至刚建立的 SDK 配置
+          mkdir -p ports/rp2/boards/RP2350_ZD25Q32D
+          
+          cat << 'EOF' > ports/rp2/boards/RP2350_ZD25Q32D/mpconfigboard.cmake
+          set(PICO_BOARD "rp2350_zd25q32d")
+          set(MICROPY_HW_FLASH_STORAGE_BYTES 3145728)
+          EOF
+          
+          cat << 'EOF' > ports/rp2/boards/RP2350_ZD25Q32D/mpconfigboard.h
           #define MICROPY_HW_BOARD_NAME "RP2350A ZD25Q32D Custom"
-          
-          // 自定义 I2C0 引脚映射
-          #define MICROPY_HW_I2C0_SDA (0)
-          #define MICROPY_HW_I2C0_SCL (1)
-          
-          // 彻底解绑 GPIO25 的系统状态灯功能，留给客户当纯通用 IO
-          #undef MICROPY_HW_LED_STATUS
-          #undef MICROPY_HW_LED_PIN
           EOF
 
       - name: Compile RP2350 Firmware
+        if: env.SKIP != 'true'
         run: |
           cd ports/rp2
           make BOARD=RP2350_ZD25Q32D -j$(nproc)
 
       - name: Prepare Named UF2 File
+        if: env.SKIP != 'true'
         run: |
           TARGET_FILENAME="RP2350A_ZD25Q32D_03h-${BUILD_DATE}-${LATEST_TAG}.uf2"
           mv ports/rp2/build-RP2350_ZD25Q32D/firmware.uf2 "${TARGET_FILENAME}"
           echo "TARGET_FILENAME=${TARGET_FILENAME}" >> $GITHUB_ENV
 
       - name: Publish to GitHub Releases
+        if: env.SKIP != 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: rp2350-zd25q32d-${{ env.LATEST_TAG }}
-          name: MicroPython ${{ env.LATEST_TAG }} (RP2350A Custom Board)
+          tag_name: zd25q32d-${{ env.LATEST_TAG }}
+          name: MicroPython ${{ env.LATEST_TAG }} (ZD25Q32D 实验性修复)
           body: |
-            针对定制 RP2350A 核心板 (ZD25Q32D 4MB) 的专属编译固件：
-            1. **核心修复**：Boot2 强制替换为 `boot2_generic_03h`，彻底解决国产 Flash 在未开启 QE 时的上电启动死机问题。
-            2. **硬件修改**：默认 I2C0 重新映射 -> SDA 位于 Pin 0，SCL 位于 Pin 1。
-            3. **IO 释放**：解除 GPIO 25 作为系统状态指示灯的绑定，用户可自由控制。
+            【实验性测试版本】针对定制 RP2350A 核心板 (ZD25Q32D 4MB) 编译。
+            此版本尚未经过实板验证，仅用于测试排查硬件启动死机问题。
+            
+            技术变更：
+            1. **Boot2 降级 (测试)**：在 SDK 层强制替换 Boot Stage 2 为 `boot2_generic_03h`，验证是否能绕开 Flash 未开启 QE 位导致的硬件挂起。
+            2. **I2C 映射**：底层默认 I2C0 配置为 SDA (Pin 0) / SCL (Pin 1)。
+            3. **IO 释放**：移除了系统默认 LED 绑定，完全释放 GPIO 25 供自由调用。
           files: ${{ env.TARGET_FILENAME }}
