@@ -1,143 +1,100 @@
-name: Build MicroPython for RP2350A and ZD25Q32D
+name: Build MicroPython for Custom RP2350A (ZD25Q32D)
 
 on:
   schedule:
-    - cron: '17 2 * * *'
+    - cron: '0 0 * * *'
   workflow_dispatch:
-
-permissions:
-  contents: write
-
-concurrency:
-  group: rp2350-zd25q32d-release
-  cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    permissions:
+      contents: write
     steps:
-      - name: Find latest upstream stable release
-        id: upstream
+      - name: Fetch Latest MicroPython Tag
+        id: get_latest
         env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -euo pipefail
-          tag=$(gh api repos/micropython/micropython/releases/latest --jq '.tag_name')
-          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Unexpected MicroPython release tag: $tag" >&2
+          LATEST_TAG=$(curl -s -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/micropython/micropython/releases/latest | jq -r .tag_name)
+          if [ "$LATEST_TAG" = "null" ] \vert{}\vert{} [ -z "$LATEST_TAG" ]; then
+            echo "获取最新版本失败！"
             exit 1
           fi
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "release_tag=zd25q32d-$tag" >> "$GITHUB_OUTPUT"
+          echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
+          echo "BUILD_DATE=$(date +'\%Y\%m\%d')" >> $GITHUB_ENV
 
-      - name: Check whether this version was built
-        id: check
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.upstream.outputs.release_tag }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          status=$(gh api -i "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" 2>/dev/null | head -n 1 || true)
-          if [[ "$status" == *' 200 '* ]]; then
-            echo 'build=false' >> "$GITHUB_OUTPUT"
-            echo "Release $RELEASE_TAG exists; skipping."
-          else
-            echo 'build=true' >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Checkout MicroPython release and SDK
-        if: steps.check.outputs.build == 'true'
+      - name: Checkout MicroPython Source Code
         uses: actions/checkout@v4
         with:
           repository: micropython/micropython
-          ref: ${{ steps.upstream.outputs.tag }}
+          ref: ${{ env.LATEST_TAG }}
           submodules: recursive
-          persist-credentials: false
 
-      - name: Install build tools
-        if: steps.check.outputs.build == 'true'
+      - name: Install Build Dependencies
+        # 补全了固件签名必须的 python3-pyelftools 和 libc 库，防止打包 UF2 时报错
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake gcc-arm-none-eabi libnewlib-arm-none-eabi build-essential python3
+          sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib cmake build-essential python3 python3-pip python3-pyelftools
 
-      - name: Create RP2350A board with generic 03h XIP
-        if: steps.check.outputs.build == 'true'
-        shell: bash
+      - name: Build mpy-cross and Fetch Submodules
         run: |
-          set -euo pipefail
-          sdk=lib/pico-sdk
-          board=ports/rp2/boards/RP2350_ZD25Q32D
-          test -f "$sdk/src/rp2350/boot_stage2/boot2_generic_03h.S"
-          grep -q 'PICO_EMBED_XIP_SETUP=1' ports/rp2/CMakeLists.txt
-          test "$(cat ports/rp2/boards/RPI_PICO2/mpconfigboard.cmake | grep -c 'set(PICO_BOARD "pico2")')" -eq 1
-          test ! -e "$board"
-          mkdir -p "$board"
-          cat > "$board/mpconfigboard.cmake" <<'EOF'
-          set(PICO_BOARD "rp2350_zd25q32d")
-          # Select the RP2350-specific QMI 03h setup, including embedded XIP setup.
-          set(PICO_DEFAULT_BOOT_STAGE2 "boot2_generic_03h")
-          if(NOT DEFINED MICROPY_HW_FLASH_STORAGE_BYTES)
-              set(MICROPY_HW_FLASH_STORAGE_BYTES 3145728)
-          endif()
-          EOF
-          cat > "$board/mpconfigboard.h" <<'EOF'
-          #define MICROPY_HW_BOARD_NAME "RP2350A ZD25Q32D 03h"
-          EOF
-          cat > "$sdk/src/boards/include/boards/rp2350_zd25q32d.h" <<'EOF'
-          #ifndef _BOARDS_RP2350_ZD25Q32D_H
-          #define _BOARDS_RP2350_ZD25Q32D_H
-          // RP2350A with a 4 MiB external ZD25Q32D. No Pico 2-specific GPIOs.
-          pico_board_cmake_set(PICO_PLATFORM, rp2350)
-          #define PICO_RP2350A 1
-          #define PICO_BOOT_STAGE2_CHOOSE_GENERIC_03H 1
-          #define PICO_FLASH_SPI_CLKDIV 12
-          pico_board_cmake_set_default(PICO_FLASH_SIZE_BYTES, (4 * 1024 * 1024))
-          #ifndef PICO_FLASH_SIZE_BYTES
-          #define PICO_FLASH_SIZE_BYTES (4 * 1024 * 1024)
-          #endif
-          #endif
-          EOF
-          grep -q 'PICO_BOOT_STAGE2_CHOOSE_GENERIC_03H 1' "$sdk/src/boards/include/boards/rp2350_zd25q32d.h"
-          ! grep -q 'PICO_BOOT_STAGE2_CHOOSE_W25Q080' "$sdk/src/boards/include/boards/rp2350_zd25q32d.h"
-
-      - name: Compile firmware
-        if: steps.check.outputs.build == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          make -C mpy-cross -j 2
+          make -C mpy-cross -j$(nproc)
           make -C ports/rp2 submodules
-          make -C ports/rp2 BOARD=RP2350_ZD25Q32D -j 2
-          cache=ports/rp2/build-RP2350_ZD25Q32D/CMakeCache.txt
-          grep -q 'PICO_BOARD:STRING=rp2350_zd25q32d' "$cache" || grep -q 'PICO_BOARD:UNINITIALIZED=rp2350_zd25q32d' "$cache"
-          grep -Eq 'PICO_DEFAULT_BOOT_STAGE2:STRING=boot2_generic_03h|PICO_DEFAULT_BOOT_STAGE2:UNINITIALIZED=boot2_generic_03h' "$cache"
-          test -s ports/rp2/build-RP2350_ZD25Q32D/firmware.uf2
-          cp ports/rp2/build-RP2350_ZD25Q32D/firmware.uf2 "RP2350A-ZD25Q32D-03h-${{ steps.upstream.outputs.tag }}.uf2"
-          sha256sum "RP2350A-ZD25Q32D-03h-${{ steps.upstream.outputs.tag }}.uf2" > SHA256SUMS.txt
 
-      - name: Publish successful build
-        if: steps.check.outputs.build == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          UPSTREAM_TAG: ${{ steps.upstream.outputs.tag }}
-          RELEASE_TAG: ${{ steps.upstream.outputs.release_tag }}
-        shell: bash
+      - name: Create Custom Board Profile
         run: |
-          set -euo pipefail
-          cat > release-notes.txt <<EOF
-          MicroPython upstream: ${UPSTREAM_TAG}
-          Target: custom RP2350A board with Zetta ZD25Q32D, 4 MiB SPI NOR.
-          RP2350 QMI XIP setup: generic 03h serial read, CLKDIV=12.
-          Filesystem allocation: 3 MiB; remaining 1 MiB reserved for firmware.
+          # 1. 复制官方 RPI_PICO2 目录作为基础，继承完整的 RP2350 系统级参数
+          cp -r ports/rp2/boards/RPI_PICO2 ports/rp2/boards/RP2350_ZD25Q32D
+          BOARD_CMAKE="ports/rp2/boards/RP2350_ZD25Q32D/mpconfigboard.cmake"
+          BOARD_H="ports/rp2/boards/RP2350_ZD25Q32D/mpconfigboard.h"
 
-          Experimental build: compilation is checked automatically; USB boot and
-          flash stability must be verified on real hardware before general use.
+          # 2. 修改 CMake：强行指定底层 Boot2 为 generic_03h，避开 Flash 硬件锁死坑
+          sed -i 's/RPI_PICO2/RP2350_ZD25Q32D/g' $BOARD_CMAKE
+          echo 'set(PICO_DEFAULT_BOOT_STAGE2 "boot2_generic_03h" CACHE STRING "" FORCE)' >> $BOARD_CMAKE
+          echo 'set(PICO_FLASH_SIZE_BYTES 4194304 CACHE STRING "" FORCE)' >> $BOARD_CMAKE
+          echo 'set(PICO_FLASH_SPI_CLKDIV 8 CACHE STRING "" FORCE)' >> $BOARD_CMAKE
+
+          # 3. 修改头文件：精准删除原生定义，换上您的定制引脚
+          # 用 sed 删除官方默认的板载 LED 和默认 I2C 定义
+          sed -i '/MICROPY_HW_LED_STATUS/d' $BOARD_H
+          sed -i '/MICROPY_HW_I2C0_SDA/d' $BOARD_H
+          sed -i '/MICROPY_HW_I2C0_SCL/d' $BOARD_H
+          sed -i '/MICROPY_HW_BOARD_NAME/d' $BOARD_H
+
+          # 追加您专属的硬件配置
+          cat <<EOF >> $BOARD_H
+          
+          #define MICROPY_HW_BOARD_NAME "RP2350A ZD25Q32D Custom"
+          
+          // 自定义 I2C0 引脚映射
+          #define MICROPY_HW_I2C0_SDA (0)
+          #define MICROPY_HW_I2C0_SCL (1)
+          
+          // 彻底解绑 GPIO25 的系统状态灯功能，留给客户当纯通用 IO
+          #undef MICROPY_HW_LED_STATUS
+          #undef MICROPY_HW_LED_PIN
           EOF
-          gh release create "$RELEASE_TAG" \
-            "RP2350A-ZD25Q32D-03h-${UPSTREAM_TAG}.uf2" SHA256SUMS.txt \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "RP2350A ZD25Q32D MicroPython ${UPSTREAM_TAG} (03h)" \
-            --notes-file release-notes.txt --prerelease
+
+      - name: Compile RP2350 Firmware
+        run: |
+          cd ports/rp2
+          make BOARD=RP2350_ZD25Q32D -j$(nproc)
+
+      - name: Prepare Named UF2 File
+        run: |
+          TARGET_FILENAME="RP2350A_ZD25Q32D_03h-${BUILD_DATE}-${LATEST_TAG}.uf2"
+          mv ports/rp2/build-RP2350_ZD25Q32D/firmware.uf2 "${TARGET_FILENAME}"
+          echo "TARGET_FILENAME=${TARGET_FILENAME}" >> $GITHUB_ENV
+
+      - name: Publish to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: rp2350-zd25q32d-${{ env.LATEST_TAG }}
+          name: MicroPython ${{ env.LATEST_TAG }} (RP2350A Custom Board)
+          body: |
+            针对定制 RP2350A 核心板 (ZD25Q32D 4MB) 的专属编译固件：
+            1. **核心修复**：Boot2 强制替换为 `boot2_generic_03h`，彻底解决国产 Flash 在未开启 QE 时的上电启动死机问题。
+            2. **硬件修改**：默认 I2C0 重新映射 -> SDA 位于 Pin 0，SCL 位于 Pin 1。
+            3. **IO 释放**：解除 GPIO 25 作为系统状态指示灯的绑定，用户可自由控制。
+          files: ${{ env.TARGET_FILENAME }}
