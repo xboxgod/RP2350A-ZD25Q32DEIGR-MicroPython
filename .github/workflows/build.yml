@@ -72,14 +72,13 @@ jobs:
         if: env.SKIP != 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib cmake build-essential python3 python3-pip python3-pyelftools meson ninja-build
+          sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib cmake build-essential python3 python3-pip python3-pyelftools pkg-config
 
       - name: Build mpy-cross and Fetch Submodules
         if: env.SKIP != 'true'
         run: |
           make -C mpy-cross -j$(nproc)
           make -C ports/rp2 submodules
-          # 显式确保 pico-sdk 子模块已拉取，防止出现空目录
           git submodule update --init --recursive lib/pico-sdk || true
 
       - name: Create Custom SDK & MicroPython Board Profiles
@@ -89,17 +88,7 @@ jobs:
           mkdir -p lib/pico-sdk/src/boards/include/boards
           mkdir -p ports/rp2/boards/RP2350_ZD25Q32D
 
-          # 2. 【核心终极修复】创建虚拟的 Findpicolibc.cmake，强制 CMake 回退到 newlib
-          mkdir -p lib/pico-sdk/tools
-          cat << 'EOF' > lib/pico-sdk/tools/Findpicolibc.cmake
-          # 虚拟模块，强制告知 CMake 未找到 picolibc，从而使用系统 newlib
-          set(PICOLIBC_FOUND FALSE)
-          set(PICOLIBC_INCLUDE_DIRS "")
-          set(PICOLIBC_LIBRARIES "")
-          return()
-          EOF
-
-          # 3. SDK 层：Flash 引导配置与分频设置
+          # 2. SDK 层：Flash 引导配置与分频设置
           cat << 'EOF' > lib/pico-sdk/src/boards/include/boards/rp2350_zd25q32d.h
           #ifndef _BOARDS_RP2350_ZD25Q32D_H
           #define _BOARDS_RP2350_ZD25Q32D_H
@@ -121,7 +110,7 @@ jobs:
           #endif
           EOF
 
-          # 4. 编写带 Task 唤醒调度的 usb_wrap.c 文件
+          # 3. 编写带 Task 唤醒调度的 usb_wrap.c 文件
           cat << 'EOF' > ports/rp2/boards/RP2350_ZD25Q32D/usb_wrap.c
           #include "tusb.h"
           #include "mp_usbd.h"
@@ -136,16 +125,13 @@ jobs:
           }
           EOF
 
-          # 5. 板级 CMake 配置
+          # 4. 板级 CMake 配置 (核心修正区)
           cat << 'EOF' > ports/rp2/boards/RP2350_ZD25Q32D/mpconfigboard.cmake
           set(PICO_BOARD "rp2350_zd25q32d")
           set(PICO_DEFAULT_BOOT_STAGE2 "boot2_generic_03h")
           
-          # 再次强制声明不使用 picolibc
-          set(PICO_USE_PICOLIBC 0 CACHE BOOL "Disable picolibc" FORCE)
-          
-          # 强制嵌入 Boot2 引导
-          set(PICO_EMBED_XIP_SETUP 1)
+          # 关键修复：通过 target_compile_definitions 定义宏，确保 PICO_EMBED_XIP_SETUP 被正确编译
+          target_compile_definitions(${MICROPY_TARGET} PRIVATE PICO_EMBED_XIP_SETUP=1)
           
           set(MICROPY_HW_FLASH_STORAGE_BYTES 3145728)
           
@@ -154,7 +140,7 @@ jobs:
           target_sources(${MICROPY_TARGET} PRIVATE ${CMAKE_CURRENT_LIST_DIR}/usb_wrap.c)
           EOF
 
-          # 6. 板级头文件
+          # 5. 板级头文件
           cat << 'EOF' > ports/rp2/boards/RP2350_ZD25Q32D/mpconfigboard.h
           #define MICROPY_HW_BOARD_NAME "RP2350A ZD25Q32D Custom"
           #define PICO_RP2350A 1
@@ -179,10 +165,10 @@ jobs:
         if: env.SKIP != 'true'
         run: |
           cd ports/rp2
-          # 彻底清理旧的构建缓存，防止 CMake 读取旧变量
+          # 彻底清理旧的构建缓存
           rm -rf build-RP2350_ZD25Q32D
-          # 再次传递禁用参数
-          make BOARD=RP2350_ZD25Q32D -j$(nproc) PICO_USE_PICOLIBC=0
+          # 【核心修复】：通过 CMAKE_ARGS 强制传递变量，彻底禁用 picolibc
+          make BOARD=RP2350_ZD25Q32D -j$(nproc) CMAKE_ARGS="-DPICO_USE_PICOLIBC=0"
 
       - name: Prepare Named UF2 File
         if: env.SKIP != 'true'
@@ -204,7 +190,7 @@ jobs:
             【诊断与测试构建】针对定制 RP2350A 核心板 (ZD25Q32D 4MB) 编译。
             
             底层核心修正项：
-            1. **Boot2 引导**：启用 `PICO_BOOT_STAGE2_CHOOSE_GENERIC_03H` 与 `PICO_EMBED_XIP_SETUP 1` 确保固件正确挂载执行。
+            1. **Boot2 引导**：启用 `PICO_BOOT_STAGE2_CHOOSE_GENERIC_03H` 并通过 `target_compile_definitions` 定义 `PICO_EMBED_XIP_SETUP=1`，确保固件正确挂载执行。
             2. **Flash 时钟对齐**：引导期与运行期严格对齐至 18.75MHz。
             3. **USB 寄存器回溯修复**：配置 `--wrap=dcd_event_handler` 并正确注册带调度唤醒的 `usb_wrap.c`。
             4. **全套引脚映射**：UART0(12/13, 无流控)、I2C0(0/1)、SPI0(16/17/18/19)。
