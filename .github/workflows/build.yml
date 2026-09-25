@@ -87,7 +87,6 @@ jobs:
           mkdir -p lib/pico-sdk/src/boards/include/boards
           mkdir -p ports/rp2/boards/RP2350_ZD25Q32D
 
-          # SDK 层：强制指定 RP2350 平台
           cat << 'EOF' > lib/pico-sdk/src/boards/include/boards/rp2350_zd25q32d.h
           #ifndef _BOARDS_RP2350_ZD25Q32D_H
           #define _BOARDS_RP2350_ZD25Q32D_H
@@ -108,7 +107,6 @@ jobs:
           #endif
           EOF
 
-          # USB 包装修复
           cat << 'EOF' > ports/rp2/boards/RP2350_ZD25Q32D/usb_wrap.c
           #include "tusb.h"
           #include "mp_usbd.h"
@@ -123,20 +121,14 @@ jobs:
           }
           EOF
 
-          # 板级 CMake：核心修正区
           cat << 'EOF' > ports/rp2/boards/RP2350_ZD25Q32D/mpconfigboard.cmake
           set(PICO_BOARD "rp2350_zd25q32d")
           set(PICO_PLATFORM "rp2350")
           set(MICROPY_HW_FLASH_STORAGE_BYTES 3145728)
-          
-          # 【核心修复】强制指定 UF2 家族 ID 为 RP2350 ARM-S
-          pico_set_uf2_family(${MICROPY_TARGET} "rp2350-arm-s")
-          
           target_link_options(${MICROPY_TARGET} PRIVATE "-Wl,--wrap=dcd_event_handler")
           target_sources(${MICROPY_TARGET} PRIVATE ${CMAKE_CURRENT_LIST_DIR}/usb_wrap.c)
           EOF
 
-          # 板级头文件
           cat << 'EOF' > ports/rp2/boards/RP2350_ZD25Q32D/mpconfigboard.h
           #define MICROPY_HW_BOARD_NAME "RP2350A ZD25Q32D Custom"
           #define PICO_RP2350A 1
@@ -162,16 +154,26 @@ jobs:
         run: |
           cd ports/rp2
           rm -rf build-RP2350_ZD25Q32D
-          make BOARD=RP2350_ZD25Q32D -j$(nproc) CMAKE_ARGS="-DPICO_USE_PICOLIBC=0 -DPICO_PLATFORM=rp2350"
+          
+          # 【真正的终极修复】：直接在源码层面劫持构建系统，强制使用 RP2350 平台
+          # 不管 MicroPython 原本怎么判断，这里强行把底层构建文件里的 rp2040 替换为 rp2350
+          sed -i 's/set(PICO_PLATFORM "rp2040")/set(PICO_PLATFORM "rp2350")/g' CMakeLists.txt
+          sed -i 's/set(PICO_PLATFORM rp2040)/set(PICO_PLATFORM rp2350)/g' CMakeLists.txt
+          
+          # 再次强行传递环境变量
+          make BOARD=RP2350_ZD25Q32D PICO_PLATFORM=rp2350 -j$(nproc) CMAKE_ARGS="-DPICO_USE_PICOLIBC=0 -DPICO_PLATFORM=rp2350"
 
-      - name: Check UF2 Family ID
+      - name: Check UF2 Family ID and RAM Size
         if: env.SKIP != 'true'
         run: |
           cd ports/rp2
-          echo "=== UF2 家族 ID 检查 ==="
-          xxd -s 28 -l 4 build-RP2350_ZD25Q32D/firmware.uf2
+          echo "=== 重要！请检查这里的 RAM 大小 ==="
+          # 编译日志里会打印内存布局，我们从构建文件里反查一下
+          grep -i "RAM" build-RP2350_ZD25Q32D/CMakeFiles/firmware.dir/link.txt || true
           echo ""
-          echo "期望的 RP2350 ARM-S Family ID 为: 59 ff 8b e4"
+          echo "=== 最终 UF2 家族 ID 检查 ==="
+          xxd -s 28 -l 4 build-RP2350_ZD25Q32D/firmware.uf2
+          echo "期望输出: 59 ff 8b e4 (RP2350 ARM-S)"
 
       - name: Prepare Named UF2 File
         if: env.SKIP != 'true'
@@ -193,8 +195,7 @@ jobs:
             【诊断与测试构建】针对定制 RP2350A 核心板 (ZD25Q32D 4MB) 编译。
             
             底层核心修正项：
-            1. **强制 RP2350 平台**：显式设置 `PICO_PLATFORM=rp2350`，确保生成的 UF2 家族 ID 为 RP2350 专用。
-            2. **UF2 家族 ID 强制指定**：通过 `pico_set_uf2_family` 强制指定为 `rp2350-arm-s` (0xe48bff59)。
-            3. **Flash 时钟对齐**：运行期限定最高 18.75MHz。
-            4. **USB 寄存器回溯修复**：配置 `--wrap=dcd_event_handler` 并正确注册带调度唤醒的 `usb_wrap.c`。
-            5. **全套引脚映射**：UART0(12/13, 无流控)、I2C0(0/1)、SPI0(16/17/18/19)。
+            1. **强制劫持构建系统**：直接修改 `ports/rp2/CMakeLists.txt`，强制将 `PICO_PLATFORM` 从 `rp2040` 替换为 `rp2350`，彻底解决编译成 RP2040 代码的历史遗留问题。
+            2. **Flash 时钟对齐**：运行期限定最高 18.75MHz。
+            3. **USB 寄存器回溯修复**：配置 `--wrap=dcd_event_handler` 并正确注册带调度唤醒的 `usb_wrap.c`。
+            4. **全套引脚映射**：UART0(12/13, 无流控)、I2C0(0/1)、SPI0(16/17/18/19)。
