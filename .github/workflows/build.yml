@@ -1,4 +1,4 @@
-name: Build Custom RP2350A (ZD25Q32D)
+name: Build RetroMagic RP2350A
 
 on:
   schedule:
@@ -46,10 +46,10 @@ jobs:
             HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
               -H "Authorization: Bearer $GH_TOKEN" \
               -H "Accept: application/vnd.github.v3+json" \
-              https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/zd25q32d-$LATEST_TAG)
+              https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/retromagic-rp2350a-$LATEST_TAG)
             
             if [ "$HTTP_STATUS" = "200" ]; then
-              echo "版本 zd25q32d-$LATEST_TAG 已存在，跳过编译。"
+              echo "版本 retromagic-rp2350a-$LATEST_TAG 已存在，跳过编译。"
               echo "SKIP=true" >> $GITHUB_ENV
             elif [ "$HTTP_STATUS" = "404" ]; then
               echo "确认版本未发布 (404 未找到)，准备编译。"
@@ -81,35 +81,59 @@ jobs:
           make -C ports/rp2 submodules
           git submodule update --init --recursive lib/pico-sdk || true
 
-      - name: Create Custom SDK & MicroPython Board Profiles
+      - name: Create RetroMagic RP2350A Board Files
         if: env.SKIP != 'true'
         run: |
-          mkdir -p lib/pico-sdk/src/boards/include/boards
-          mkdir -p ports/rp2/boards/RP2350_ZD25Q32D
+          BOARD_DIR="ports/rp2/boards/RETROMAGIC_RP2350A"
+          mkdir -p $BOARD_DIR
 
-          # SDK 层板级头文件
-          cat << 'EOF' > lib/pico-sdk/src/boards/include/boards/rp2350_zd25q32d.h
-          #ifndef _BOARDS_RP2350_ZD25Q32D_H
-          #define _BOARDS_RP2350_ZD25Q32D_H
+          # 【核心修正】在 ports/rp2/CMakeLists.txt 的最顶部强制注入平台定义
+          # 使用 CACHE ... FORCE 防止被后续逻辑覆盖，这是解决“编译成RP2040”问题的关键
+          sed -i '1i set(PICO_PLATFORM "rp2350" CACHE STRING "" FORCE)' ports/rp2/CMakeLists.txt
+
+          # 板级 CMake 配置文件 (平台已由 CMakeLists.txt 保证，此处只配置板级参数)
+          cat << 'EOF' > $BOARD_DIR/mpconfigboard.cmake
+          # RetroMagic RP2350A 专用板级配置
+          set(PICO_BOARD "retromagic_rp2350a")
+          set(PICO_BOARD_HEADER_DIRS ${CMAKE_CURRENT_LIST_DIR})
           
-          pico_board_cmake_set(PICO_PLATFORM, rp2350)
-          pico_board_cmake_set_default(PICO_FLASH_SIZE_BYTES, (4 * 1024 * 1024))
+          # Flash 存储空间分配：4MB 中预留 3MB 给文件系统
+          set(MICROPY_HW_FLASH_STORAGE_BYTES 3145728)
           
-          #define PICO_FLASH_SPI_CLKDIV 8
+          # 注册 USB 修复源码
+          target_sources(${MICROPY_TARGET} PRIVATE ${CMAKE_CURRENT_LIST_DIR}/usb_wrap.c)
           
-          #ifndef PICO_FLASH_SIZE_BYTES
-          #define PICO_FLASH_SIZE_BYTES (4 * 1024 * 1024)
-          #endif
-          
-          #define PICO_DEFAULT_I2C 0
-          #define PICO_DEFAULT_SPI 0
-          #define PICO_DEFAULT_UART 0
-          
-          #endif
+          # 添加 USB 修复的链接选项
+          target_link_options(${MICROPY_TARGET} PRIVATE "-Wl,--wrap=dcd_event_handler")
           EOF
 
-          # USB 包装修复
-          cat << 'EOF' > ports/rp2/boards/RP2350_ZD25Q32D/usb_wrap.c
+          # 板级头文件 (引脚映射与 Flash 参数)
+          cat << 'EOF' > $BOARD_DIR/mpconfigboard.h
+          #define MICROPY_HW_BOARD_NAME "RetroMagic RP2350A"
+          #define PICO_RP2350A 1
+          
+          // 运行期 Flash 时钟限制为 18.75MHz（150MHz系统时钟 / 8）
+          #define MICROPY_HW_FLASH_MAX_FREQ (18750000)
+          
+          // UART0 引脚映射
+          #define MICROPY_HW_UART0_TX (12)
+          #define MICROPY_HW_UART0_RX (13)
+          #define MICROPY_HW_UART0_CTS (-1)
+          #define MICROPY_HW_UART0_RTS (-1)
+          
+          // I2C0 引脚映射
+          #define MICROPY_HW_I2C0_SDA (0)
+          #define MICROPY_HW_I2C0_SCL (1)
+          
+          // SPI0 引脚映射
+          #define MICROPY_HW_SPI0_SCK (18)
+          #define MICROPY_HW_SPI0_TX (19)
+          #define MICROPY_HW_SPI0_RX (16)
+          #define MICROPY_HW_SPI0_CS (17)
+          EOF
+
+          # USB 包装修复文件 (针对 TinyUSB 枚举回归问题)
+          cat << 'EOF' > $BOARD_DIR/usb_wrap.c
           #include "tusb.h"
           #include "mp_usbd.h"
           #include "py/mphal.h"
@@ -123,80 +147,77 @@ jobs:
           }
           EOF
 
-          # 板级 CMake 配置 (显式声明平台)
-          cat << 'EOF' > ports/rp2/boards/RP2350_ZD25Q32D/mpconfigboard.cmake
-          set(PICO_BOARD "rp2350_zd25q32d")
-          # 在板级配置中再次显式声明平台
-          set(PICO_PLATFORM "rp2350")
-          set(MICROPY_HW_FLASH_STORAGE_BYTES 3145728)
-          target_link_options(${MICROPY_TARGET} PRIVATE "-Wl,--wrap=dcd_event_handler")
-          target_sources(${MICROPY_TARGET} PRIVATE ${CMAKE_CURRENT_LIST_DIR}/usb_wrap.c)
+          # SDK 层板级头文件 (Flash 引导与分频配置)
+          mkdir -p lib/pico-sdk/src/boards/include/boards
+          cat << 'EOF' > lib/pico-sdk/src/boards/include/boards/retromagic_rp2350a.h
+          #ifndef _BOARDS_RETROMAGIC_RP2350A_H
+          #define _BOARDS_RETROMAGIC_RP2350A_H
+          
+          pico_board_cmake_set(PICO_PLATFORM, rp2350)
+          pico_board_cmake_set_default(PICO_FLASH_SIZE_BYTES, (4 * 1024 * 1024))
+          
+          // 使用最保守的单线 03h 模式，确保 Flash 兼容性
+          #define PICO_BOOT_STAGE2_CHOOSE_GENERIC_03H 1
+          #define PICO_FLASH_SPI_CLKDIV 8
+          
+          // 强制嵌入 boot2 引导 (RP2350 必须)
+          #define PICO_EMBED_XIP_SETUP 1
+          
+          #ifndef PICO_FLASH_SIZE_BYTES
+          #define PICO_FLASH_SIZE_BYTES (4 * 1024 * 1024)
+          #endif
+          
+          #define PICO_DEFAULT_I2C 0
+          #define PICO_DEFAULT_SPI 0
+          #define PICO_DEFAULT_UART 0
+          
+          #endif
           EOF
 
-          # 板级头文件
-          cat << 'EOF' > ports/rp2/boards/RP2350_ZD25Q32D/mpconfigboard.h
-          #define MICROPY_HW_BOARD_NAME "RP2350A ZD25Q32D Custom"
-          #define PICO_RP2350A 1
-          
-          #define MICROPY_HW_FLASH_MAX_FREQ (18750000)
-          
-          #define MICROPY_HW_UART0_TX (12)
-          #define MICROPY_HW_UART0_RX (13)
-          #define MICROPY_HW_UART0_CTS (-1)
-          #define MICROPY_HW_UART0_RTS (-1)
-          
-          #define MICROPY_HW_I2C0_SDA (0)
-          #define MICROPY_HW_I2C0_SCL (1)
-          
-          #define MICROPY_HW_SPI0_SCK (18)
-          #define MICROPY_HW_SPI0_TX (19)
-          #define MICROPY_HW_SPI0_RX (16)
-          #define MICROPY_HW_SPI0_CS (17)
-          EOF
-
-      - name: Compile RP2350 Firmware
+      - name: Compile RetroMagic RP2350A Firmware
         if: env.SKIP != 'true'
         run: |
           cd ports/rp2
-          rm -rf build-RP2350_ZD25Q32D
-          
-          # 【核心修复】通过环境变量和 CMAKE_ARGS 双重强制指定 RP2350 平台
-          export PICO_PLATFORM=rp2350
-          make BOARD=RP2350_ZD25Q32D -j$(nproc) \
+          rm -rf build-RETROMAGIC_RP2350A
+          # 通过 CMAKE_ARGS 传递 -DPICO_PLATFORM=rp2350 作为双保险
+          make BOARD=RETROMAGIC_RP2350A -j$(nproc) \
             CMAKE_ARGS="-DPICO_USE_PICOLIBC=0 -DPICO_PLATFORM=rp2350"
 
-      - name: Verify RAM Size and UF2 Family ID
+      - name: Verify Firmware
         if: env.SKIP != 'true'
         run: |
           cd ports/rp2
-          echo "=== 检查链接器脚本中的 RAM 大小（应为 520 KB）==="
-          grep -i "RAM" build-RP2350_ZD25Q32D/CMakeFiles/firmware.dir/link.txt || true
-          echo ""
           echo "=== 检查 UF2 家族 ID ==="
-          xxd -s 28 -l 4 build-RP2350_ZD25Q32D/firmware.uf2
+          xxd -s 28 -l 4 build-RETROMAGIC_RP2350A/firmware.uf2
           echo "期望输出: 59 ff 8b e4 (RP2350 ARM-S)"
+          echo ""
+          echo "=== 检查 RAM 大小（应为 520 KB）==="
+          grep -i "RAM" build-RETROMAGIC_RP2350A/CMakeFiles/firmware.dir/link.txt || true
 
       - name: Prepare Named UF2 File
         if: env.SKIP != 'true'
         run: |
-          TARGET_FILENAME="RP2350A_ZD25Q32D_03h-${LATEST_TAG}.uf2"
-          mv ports/rp2/build-RP2350_ZD25Q32D/firmware.uf2 "${TARGET_FILENAME}"
+          TARGET_FILENAME="RetroMagic_RP2350A_ZD25Q32D-${LATEST_TAG}.uf2"
+          mv ports/rp2/build-RETROMAGIC_RP2350A/firmware.uf2 "${TARGET_FILENAME}"
           echo "TARGET_FILENAME=${TARGET_FILENAME}" >> $GITHUB_ENV
 
       - name: Publish to GitHub Releases
         if: env.SKIP != 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: zd25q32d-${{ env.LATEST_TAG }}
-          name: MicroPython ${{ env.LATEST_TAG }} (ZD25Q32D 诊断构建版)
+          tag_name: retromagic-rp2350a-${{ env.LATEST_TAG }}
+          name: RetroMagic RP2350A ${{ env.LATEST_TAG }}
           prerelease: true
           fail_on_unmatched_files: true
           files: ${{ env.TARGET_FILENAME }}
           body: |
-            【诊断与测试构建】针对定制 RP2350A 核心板 (ZD25Q32D 4MB) 编译。
+            【RetroMagic RP2350A 专用固件】
             
-            底层核心修正项：
-            1. **强制 RP2350 平台**：通过环境变量 `PICO_PLATFORM=rp2350` 和 `CMAKE_ARGS` 双重传递，确保 pico-sdk 编译正确的 Cortex-M33 代码。
-            2. **USB 寄存器回溯修复**：配置 `--wrap=dcd_event_handler` 并正确注册带调度唤醒的 `usb_wrap.c`。
-            3. **Flash 时钟策略**：运行期限定最高 18.75MHz。
-            4. **全套引脚映射**：UART0(12/13, 无流控)、I2C0(0/1)、SPI0(16/17/18/19)。
+            基于 MicroPython ${{ env.LATEST_TAG }} 为 RetroMagic RP2350A 定制板编译。
+            
+            板级配置：
+            1. **平台**：通过在 `ports/rp2/CMakeLists.txt` 顶部强制注入 `PICO_PLATFORM=rp2350`，确保编译正确的 Cortex-M33 代码。
+            2. **Boot2 引导**：使用 `boot2_generic_03h`（单线 03h 模式），启用 `PICO_EMBED_XIP_SETUP` 确保嵌入。
+            3. **Flash 时钟**：引导期与运行期均限制在 18.75MHz，确保 ZD25Q32D 时序稳定。
+            4. **USB 修复**：注入 `--wrap=dcd_event_handler` 修复高版本 TinyUSB 枚举问题。
+            5. **引脚映射**：UART0(12/13)、I2C0(0/1)、SPI0(16/17/18/19)。
