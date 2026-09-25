@@ -72,7 +72,6 @@ jobs:
         if: env.SKIP != 'true'
         run: |
           sudo apt-get update
-          # 补充安装 meson 和 ninja-build，防患于未然
           sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib cmake build-essential python3 python3-pip python3-pyelftools meson ninja-build
 
       - name: Build mpy-cross and Fetch Submodules
@@ -80,6 +79,8 @@ jobs:
         run: |
           make -C mpy-cross -j$(nproc)
           make -C ports/rp2 submodules
+          # 显式确保 pico-sdk 子模块已拉取，防止出现空目录
+          git submodule update --init --recursive lib/pico-sdk || true
 
       - name: Create Custom SDK & MicroPython Board Profiles
         if: env.SKIP != 'true'
@@ -88,9 +89,15 @@ jobs:
           mkdir -p lib/pico-sdk/src/boards/include/boards
           mkdir -p ports/rp2/boards/RP2350_ZD25Q32D
 
-          # 2. 【核心终极修复】直接修改 pico-sdk 源码，强制跳过 picolibc 查找
-          # 在 Findpicolibc.cmake 第一行插入 return()，彻底阻断其下载和编译逻辑
-          sed -i '1i return()' lib/pico-sdk/tools/Findpicolibc.cmake
+          # 2. 【核心终极修复】创建虚拟的 Findpicolibc.cmake，强制 CMake 回退到 newlib
+          mkdir -p lib/pico-sdk/tools
+          cat << 'EOF' > lib/pico-sdk/tools/Findpicolibc.cmake
+          # 虚拟模块，强制告知 CMake 未找到 picolibc，从而使用系统 newlib
+          set(PICOLIBC_FOUND FALSE)
+          set(PICOLIBC_INCLUDE_DIRS "")
+          set(PICOLIBC_LIBRARIES "")
+          return()
+          EOF
 
           # 3. SDK 层：Flash 引导配置与分频设置
           cat << 'EOF' > lib/pico-sdk/src/boards/include/boards/rp2350_zd25q32d.h
@@ -135,7 +142,7 @@ jobs:
           set(PICO_DEFAULT_BOOT_STAGE2 "boot2_generic_03h")
           
           # 再次强制声明不使用 picolibc
-          set(PICO_USE_PICOLIBC 0)
+          set(PICO_USE_PICOLIBC 0 CACHE BOOL "Disable picolibc" FORCE)
           
           # 强制嵌入 Boot2 引导
           set(PICO_EMBED_XIP_SETUP 1)
