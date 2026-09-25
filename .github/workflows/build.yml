@@ -83,9 +83,15 @@ jobs:
       - name: Create Custom SDK & MicroPython Board Profiles
         if: env.SKIP != 'true'
         run: |
+          # 1. 预创建所有需要的目录
           mkdir -p lib/pico-sdk/src/boards/include/boards
           mkdir -p ports/rp2/boards/RP2350_ZD25Q32D
 
+          # 2. 【核心修复】强制 pico-sdk 全局禁用 picolibc，避免其从源码构建失败
+          # 使用 CACHE FORCE 确保覆盖底层工具链的默认设置
+          echo "set(PICO_USE_PICOLIBC 0 CACHE BOOL \"Disable picolibc\" FORCE)" >> lib/pico-sdk/CMakeLists.txt
+
+          # 3. SDK 层：Flash 引导配置与分频设置
           cat << 'EOF' > lib/pico-sdk/src/boards/include/boards/rp2350_zd25q32d.h
           #ifndef _BOARDS_RP2350_ZD25Q32D_H
           #define _BOARDS_RP2350_ZD25Q32D_H
@@ -107,9 +113,10 @@ jobs:
           #endif
           EOF
 
+          # 4. 编写带 Task 唤醒调度的 usb_wrap.c 文件
           cat << 'EOF' > ports/rp2/boards/RP2350_ZD25Q32D/usb_wrap.c
           #include "tusb.h"
-          #include "shared/tinyusb/mp_usbd.h"
+          #include "mp_usbd.h"
           #include "py/mphal.h"
 
           extern void __real_dcd_event_handler(dcd_event_t const *event, bool in_isr);
@@ -121,25 +128,40 @@ jobs:
           }
           EOF
 
+          # 5. 板级 CMake 配置 (包含 XIP 强制嵌入与链接器选项)
           cat << 'EOF' > ports/rp2/boards/RP2350_ZD25Q32D/mpconfigboard.cmake
           set(PICO_BOARD "rp2350_zd25q32d")
           set(PICO_DEFAULT_BOOT_STAGE2 "boot2_generic_03h")
+          
+          # 再次强制禁用 picolibc，双重保险
+          set(PICO_USE_PICOLIBC 0 CACHE BOOL "Disable picolibc" FORCE)
+          
+          # 强制嵌入 Boot2 引导
           set(PICO_EMBED_XIP_SETUP 1)
+          
           set(MICROPY_HW_FLASH_STORAGE_BYTES 3145728)
+          
+          # 链接选项与源码注册 (使用绝对路径确保准确找到 usb_wrap.c)
           target_link_options(${MICROPY_TARGET} PRIVATE "-Wl,--wrap=dcd_event_handler")
-          target_sources(${MICROPY_TARGET} PRIVATE usb_wrap.c)
+          target_sources(${MICROPY_TARGET} PRIVATE ${CMAKE_CURRENT_LIST_DIR}/usb_wrap.c)
           EOF
 
+          # 6. 板级头文件 (配置全部硬件外设引脚与流控宏)
           cat << 'EOF' > ports/rp2/boards/RP2350_ZD25Q32D/mpconfigboard.h
           #define MICROPY_HW_BOARD_NAME "RP2350A ZD25Q32D Custom"
           #define PICO_RP2350A 1
+          
           #define MICROPY_HW_FLASH_MAX_FREQ (18750000)
+          
+          // UART0 引脚及流控配置 (-1 表示无硬件流控)
           #define MICROPY_HW_UART0_TX (12)
           #define MICROPY_HW_UART0_RX (13)
           #define MICROPY_HW_UART0_CTS (-1)
           #define MICROPY_HW_UART0_RTS (-1)
+          
           #define MICROPY_HW_I2C0_SDA (0)
           #define MICROPY_HW_I2C0_SCL (1)
+          
           #define MICROPY_HW_SPI0_SCK (18)
           #define MICROPY_HW_SPI0_MOSI (19)
           #define MICROPY_HW_SPI0_MISO (16)
@@ -150,6 +172,7 @@ jobs:
         if: env.SKIP != 'true'
         run: |
           cd ports/rp2
+          # 再次在命令行强制传递禁用参数，确保万无一失
           make BOARD=RP2350_ZD25Q32D -j$(nproc) PICO_USE_PICOLIBC=0
 
       - name: Prepare Named UF2 File
