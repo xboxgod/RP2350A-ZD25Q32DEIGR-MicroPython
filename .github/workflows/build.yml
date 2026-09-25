@@ -1,3 +1,85 @@
+name: Build Custom RP2350A (ZD25Q32D)
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: '强制重新编译 (无视已发布的 Release)'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Fetch Latest MicroPython Tag
+        id: get_latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          LATEST_TAG=$(curl -s -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/micropython/micropython/releases/latest | jq -r .tag_name)
+          if [ "$LATEST_TAG" = "null" ] || [ -z "$LATEST_TAG" ]; then
+            echo "获取最新版本失败！"
+            exit 1
+          fi
+          echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
+
+      - name: Check if Version Already Built
+        id: check_built
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          FORCE_REBUILD="${{ inputs.force_rebuild }}"
+          if [ "$FORCE_REBUILD" = "true" ]; then
+            echo "手动触发强制重编，跳过版本存在检查。"
+            echo "SKIP=false" >> $GITHUB_ENV
+          else
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/zd25q32d-$LATEST_TAG)
+            
+            if [ "$HTTP_STATUS" = "200" ]; then
+              echo "版本 zd25q32d-$LATEST_TAG 已存在，跳过编译。"
+              echo "SKIP=true" >> $GITHUB_ENV
+            elif [ "$HTTP_STATUS" = "404" ]; then
+              echo "确认版本未发布 (404 未找到)，准备编译。"
+              echo "SKIP=false" >> $GITHUB_ENV
+            else
+              echo "GitHub API 异常 (HTTP $HTTP_STATUS)，停止构建防止误触发。"
+              exit 1
+            fi
+          fi
+
+      - name: Checkout MicroPython Source Code
+        if: env.SKIP != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: micropython/micropython
+          ref: ${{ env.LATEST_TAG }}
+          submodules: recursive
+
+      - name: Install Build Dependencies
+        if: env.SKIP != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib cmake build-essential python3 python3-pip python3-pyelftools
+
+      - name: Build mpy-cross and Fetch Submodules
+        if: env.SKIP != 'true'
+        run: |
+          make -C mpy-cross -j$(nproc)
+          make -C ports/rp2 submodules
+
       - name: Create Custom SDK & MicroPython Board Profiles
         if: env.SKIP != 'true'
         run: |
@@ -47,10 +129,13 @@
           set(PICO_BOARD "rp2350_zd25q32d")
           set(PICO_DEFAULT_BOOT_STAGE2 "boot2_generic_03h")
           
-          set(MICROPY_HW_FLASH_STORAGE_BYTES 3145728)
+          # 关键修复1：强制使用 newlib，避免 pico-sdk 在 Ubuntu 上尝试编译 picolibc 失败
+          set(PICO_USE_PICOLIBC 0)
           
-          # 使用 target_compile_definitions 确保宏精准作用到固件目标
-          target_compile_definitions(${MICROPY_TARGET} PRIVATE PICO_EMBED_XIP_SETUP=1)
+          # 关键修复2：以 CMake 变量形式启用 Boot2 嵌入 (上一版写法有误，这次必须这样写)
+          set(PICO_EMBED_XIP_SETUP 1)
+          
+          set(MICROPY_HW_FLASH_STORAGE_BYTES 3145728)
           
           # 链接选项与源码注册
           target_link_options(${MICROPY_TARGET} PRIVATE "-Wl,--wrap=dcd_event_handler")
@@ -78,3 +163,34 @@
           #define MICROPY_HW_SPI0_MISO (16)
           #define MICROPY_HW_SPI0_CS (17)
           EOF
+
+      - name: Compile RP2350 Firmware
+        if: env.SKIP != 'true'
+        run: |
+          cd ports/rp2
+          make BOARD=RP2350_ZD25Q32D -j$(nproc)
+
+      - name: Prepare Named UF2 File
+        if: env.SKIP != 'true'
+        run: |
+          TARGET_FILENAME="RP2350A_ZD25Q32D_03h-${LATEST_TAG}.uf2"
+          mv ports/rp2/build-RP2350_ZD25Q32D/firmware.uf2 "${TARGET_FILENAME}"
+          echo "TARGET_FILENAME=${TARGET_FILENAME}" >> $GITHUB_ENV
+
+      - name: Publish to GitHub Releases
+        if: env.SKIP != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: zd25q32d-${{ env.LATEST_TAG }}
+          name: MicroPython ${{ env.LATEST_TAG }} (ZD25Q32D 诊断构建版)
+          prerelease: true
+          fail_on_unmatched_files: true
+          files: ${{ env.TARGET_FILENAME }}
+          body: |
+            【诊断与测试构建】针对定制 RP2350A 核心板 (ZD25Q32D 4MB) 编译。
+            
+            底层核心修正项：
+            1. **Boot2 引导**：启用 `PICO_BOOT_STAGE2_CHOOSE_GENERIC_03H` 与 `PICO_EMBED_XIP_SETUP 1` 确保固件正确挂载执行。
+            2. **Flash 时钟对齐**：引导期与运行期严格对齐至 18.75MHz。
+            3. **USB 寄存器回溯修复**：配置 `--wrap=dcd_event_handler` 并正确注册带调度唤醒的 `usb_wrap.c`。
+            4. **全套引脚映射**：UART0(12/13, 无流控)、I2C0(0/1)、SPI0(16/17/18/19)。
