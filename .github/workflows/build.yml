@@ -84,19 +84,18 @@ jobs:
       - name: Create Custom SDK & MicroPython Board Profiles
         if: env.SKIP != 'true'
         run: |
-          # 1. 预创建所有需要的目录
           mkdir -p lib/pico-sdk/src/boards/include/boards
           mkdir -p ports/rp2/boards/RP2350_ZD25Q32D
 
-          # 2. SDK 层：Flash 引导配置与分频设置
+          # SDK 层：明确指定 RP2350 平台
           cat << 'EOF' > lib/pico-sdk/src/boards/include/boards/rp2350_zd25q32d.h
           #ifndef _BOARDS_RP2350_ZD25Q32D_H
           #define _BOARDS_RP2350_ZD25Q32D_H
           
+          // 强制使用 RP2350 平台
           pico_board_cmake_set(PICO_PLATFORM, rp2350)
           pico_board_cmake_set_default(PICO_FLASH_SIZE_BYTES, (4 * 1024 * 1024))
           
-          #define PICO_BOOT_STAGE2_CHOOSE_GENERIC_03H 1
           #define PICO_FLASH_SPI_CLKDIV 8
           
           #ifndef PICO_FLASH_SIZE_BYTES
@@ -110,7 +109,7 @@ jobs:
           #endif
           EOF
 
-          # 3. 编写带 Task 唤醒调度的 usb_wrap.c 文件
+          # USB 包装修复
           cat << 'EOF' > ports/rp2/boards/RP2350_ZD25Q32D/usb_wrap.c
           #include "tusb.h"
           #include "mp_usbd.h"
@@ -125,22 +124,16 @@ jobs:
           }
           EOF
 
-          # 4. 板级 CMake 配置 (核心修正区)
+          # 板级 CMake：显式设置 PICO_PLATFORM 为 rp2350
           cat << 'EOF' > ports/rp2/boards/RP2350_ZD25Q32D/mpconfigboard.cmake
           set(PICO_BOARD "rp2350_zd25q32d")
-          set(PICO_DEFAULT_BOOT_STAGE2 "boot2_generic_03h")
-          
-          # 关键修复：通过 target_compile_definitions 定义宏，确保 PICO_EMBED_XIP_SETUP 被正确编译
-          target_compile_definitions(${MICROPY_TARGET} PRIVATE PICO_EMBED_XIP_SETUP=1)
-          
+          set(PICO_PLATFORM "rp2350")
           set(MICROPY_HW_FLASH_STORAGE_BYTES 3145728)
-          
-          # 链接选项与源码注册
           target_link_options(${MICROPY_TARGET} PRIVATE "-Wl,--wrap=dcd_event_handler")
           target_sources(${MICROPY_TARGET} PRIVATE ${CMAKE_CURRENT_LIST_DIR}/usb_wrap.c)
           EOF
 
-          # 5. 板级头文件
+          # 板级头文件
           cat << 'EOF' > ports/rp2/boards/RP2350_ZD25Q32D/mpconfigboard.h
           #define MICROPY_HW_BOARD_NAME "RP2350A ZD25Q32D Custom"
           #define PICO_RP2350A 1
@@ -156,8 +149,8 @@ jobs:
           #define MICROPY_HW_I2C0_SCL (1)
           
           #define MICROPY_HW_SPI0_SCK (18)
-          #define MICROPY_HW_SPI0_MOSI (19)
-          #define MICROPY_HW_SPI0_MISO (16)
+          #define MICROPY_HW_SPI0_TX (19)
+          #define MICROPY_HW_SPI0_RX (16)
           #define MICROPY_HW_SPI0_CS (17)
           EOF
 
@@ -165,10 +158,23 @@ jobs:
         if: env.SKIP != 'true'
         run: |
           cd ports/rp2
-          # 彻底清理旧的构建缓存
           rm -rf build-RP2350_ZD25Q32D
-          # 【核心修复】：通过 CMAKE_ARGS 强制传递变量，彻底禁用 picolibc
-          make BOARD=RP2350_ZD25Q32D -j$(nproc) CMAKE_ARGS="-DPICO_USE_PICOLIBC=0"
+          # 显式传递 PICO_PLATFORM=rp2350
+          make BOARD=RP2350_ZD25Q32D -j$(nproc) CMAKE_ARGS="-DPICO_USE_PICOLIBC=0 -DPICO_PLATFORM=rp2350"
+
+      - name: Check UF2 Family ID
+        if: env.SKIP != 'true'
+        run: |
+          cd ports/rp2
+          echo "=== UF2 文件头（前 32 字节）==="
+          xxd -l 32 build-RP2350_ZD25Q32D/firmware.uf2
+          echo ""
+          echo "=== 查找 Family ID（偏移 0x1C 处的 4 字节）==="
+          # UF2 魔数 0x0A324655，第二个魔数 0x9E5D5157，familyID 在偏移 28 字节处
+          xxd -s 28 -l 4 build-RP2350_ZD25Q32D/firmware.uf2
+          echo ""
+          echo "RP2350 的 Family ID 应为 0xe48bff57（小端序显示为 57 ff 8b e4）"
+          echo "RP2040 的 Family ID 应为 0xe48bff56（小端序显示为 56 ff 8b e4）"
 
       - name: Prepare Named UF2 File
         if: env.SKIP != 'true'
@@ -190,7 +196,7 @@ jobs:
             【诊断与测试构建】针对定制 RP2350A 核心板 (ZD25Q32D 4MB) 编译。
             
             底层核心修正项：
-            1. **Boot2 引导**：启用 `PICO_BOOT_STAGE2_CHOOSE_GENERIC_03H` 并通过 `target_compile_definitions` 定义 `PICO_EMBED_XIP_SETUP=1`，确保固件正确挂载执行。
-            2. **Flash 时钟对齐**：引导期与运行期严格对齐至 18.75MHz。
+            1. **强制 RP2350 平台**：显式设置 `PICO_PLATFORM=rp2350`，确保生成的 UF2 家族 ID 为 RP2350 专用。
+            2. **Flash 时钟对齐**：运行期限定最高 18.75MHz。
             3. **USB 寄存器回溯修复**：配置 `--wrap=dcd_event_handler` 并正确注册带调度唤醒的 `usb_wrap.c`。
             4. **全套引脚映射**：UART0(12/13, 无流控)、I2C0(0/1)、SPI0(16/17/18/19)。
