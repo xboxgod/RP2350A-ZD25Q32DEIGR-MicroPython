@@ -81,69 +81,60 @@ jobs:
           make -C ports/rp2 submodules
           git submodule update --init --recursive lib/pico-sdk || true
 
-      - name: Create RetroMagic RP2350A Board Files
+      - name: Create RetroMagic RP2350A Board from RPI_PICO2
         if: env.SKIP != 'true'
         run: |
-          BOARD_DIR="ports/rp2/boards/RETROMAGIC_RP2350A"
-          mkdir -p $BOARD_DIR
-
-          # 【核心逻辑修正】借用 pico2 的合法身份，强制走 RP2350 工具链
-          cat << 'EOF' > $BOARD_DIR/mpconfigboard.cmake
+          # 1. 复制官方 RPI_PICO2 板级目录，完全继承其构建配置
+          cp -r ports/rp2/boards/RPI_PICO2 ports/rp2/boards/RETROMAGIC_RP2350A
+          
+          # 2. 覆盖 mpconfigboard.cmake：保持 PICO_BOARD "pico2"，仅覆盖 Flash 引导和 USB 修复
+          cat << 'EOF' > ports/rp2/boards/RETROMAGIC_RP2350A/mpconfigboard.cmake
           # RetroMagic RP2350A 专用板级配置
-          
-          # 关键：必须指定为 pico2，告诉 pico-sdk 使用 RP2350 工具链 (cortex-m33)
+          # 继承自官方 RPI_PICO2，PICO_BOARD 保持为 "pico2" 以确保正确的工具链
           set(PICO_BOARD "pico2")
-          set(PICO_BOARD_HEADER_DIRS ${CMAKE_CURRENT_LIST_DIR})
           
-          # 强制指定平台为 rp2350，双保险
-          set(PICO_PLATFORM "rp2350")
-          
-          # Flash 引导与时钟配置
+          # 覆盖 Flash 引导配置为最保守的 03h 单线模式
+          set(PICO_DEFAULT_BOOT_STAGE2 "boot2_generic_03h")
           set(PICO_EMBED_XIP_SETUP 1)
-          set(PICO_BOOT_STAGE2_CHOOSE_GENERIC_03H 1)
           set(PICO_FLASH_SPI_CLKDIV 8)
           
-          # 4MB 中预留 3MB 给文件系统
+          # Flash 存储空间分配：4MB 中预留 3MB 给文件系统
           set(MICROPY_HW_FLASH_STORAGE_BYTES 3145728)
           
           # 注册 USB 修复源码
           target_sources(${MICROPY_TARGET} PRIVATE ${CMAKE_CURRENT_LIST_DIR}/usb_wrap.c)
           target_link_options(${MICROPY_TARGET} PRIVATE "-Wl,--wrap=dcd_event_handler")
           EOF
-
-          # 板级头文件 (引脚映射与 Flash 参数)
-          cat << 'EOF' > $BOARD_DIR/mpconfigboard.h
+          
+          # 3. 覆盖 mpconfigboard.h：定义 RetroMagic 的引脚和 Flash 参数
+          cat << 'EOF' > ports/rp2/boards/RETROMAGIC_RP2350A/mpconfigboard.h
           #define MICROPY_HW_BOARD_NAME "RetroMagic RP2350A"
           #define PICO_RP2350A 1
           
-          // 运行期 Flash 时钟限制为 18.75MHz（150MHz系统时钟 / 8）
           #define MICROPY_HW_FLASH_MAX_FREQ (18750000)
           
-          // UART0 引脚映射
           #define MICROPY_HW_UART0_TX (12)
           #define MICROPY_HW_UART0_RX (13)
           #define MICROPY_HW_UART0_CTS (-1)
           #define MICROPY_HW_UART0_RTS (-1)
           
-          // I2C0 引脚映射
           #define MICROPY_HW_I2C0_SDA (0)
           #define MICROPY_HW_I2C0_SCL (1)
           
-          // SPI0 引脚映射
           #define MICROPY_HW_SPI0_SCK (18)
           #define MICROPY_HW_SPI0_TX (19)
           #define MICROPY_HW_SPI0_RX (16)
           #define MICROPY_HW_SPI0_CS (17)
           EOF
-
-          # USB 包装修复文件
-          cat << 'EOF' > $BOARD_DIR/usb_wrap.c
+          
+          # 4. 创建 USB 包装修复文件
+          cat << 'EOF' > ports/rp2/boards/RETROMAGIC_RP2350A/usb_wrap.c
           #include "tusb.h"
           #include "mp_usbd.h"
           #include "py/mphal.h"
-
+          
           extern void __real_dcd_event_handler(dcd_event_t const *event, bool in_isr);
-
+          
           void __wrap_dcd_event_handler(dcd_event_t const *event, bool in_isr) {
               __real_dcd_event_handler(event, in_isr);
               mp_usbd_schedule_task();
@@ -156,9 +147,7 @@ jobs:
         run: |
           cd ports/rp2
           rm -rf build-RETROMAGIC_RP2350A
-          # 通过 PICO_BOARD=pico2 彻底锁定 RP2350 平台
-          make BOARD=RETROMAGIC_RP2350A PICO_BOARD=pico2 -j$(nproc) \
-            CMAKE_ARGS="-DPICO_USE_PICOLIBC=0"
+          make BOARD=RETROMAGIC_RP2350A -j$(nproc) CMAKE_ARGS="-DPICO_USE_PICOLIBC=0"
 
       - name: Verify Firmware
         if: env.SKIP != 'true'
@@ -193,8 +182,8 @@ jobs:
             基于 MicroPython ${{ env.LATEST_TAG }} 为 RetroMagic RP2350A 定制板编译。
             
             板级配置：
-            1. **平台**：通过 `PICO_BOARD=pico2` 借用合法身份，强制使用 RP2350 (Cortex-M33) 工具链。
-            2. **Boot2 引导**：使用 `boot2_generic_03h`（单线 03h 模式），启用 `PICO_EMBED_XIP_SETUP`。
+            1. **平台**：复制官方 RPI_PICO2 板级目录，保持 `PICO_BOARD "pico2"`，继承正确的 RP2350 (Cortex-M33) 工具链。
+            2. **Boot2 引导**：覆盖为 `boot2_generic_03h`（单线 03h 模式），启用 `PICO_EMBED_XIP_SETUP`。
             3. **Flash 时钟**：引导期与运行期均限制在 18.75MHz，确保 ZD25Q32D 时序稳定。
             4. **USB 修复**：注入 `--wrap=dcd_event_handler` 修复高版本 TinyUSB 枚举问题。
             5. **引脚映射**：UART0(12/13)、I2C0(0/1)、SPI0(16/17/18/19)。
