@@ -72,7 +72,8 @@ jobs:
         if: env.SKIP != 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib cmake build-essential python3 python3-pip python3-pyelftools
+          # 补充安装 meson 和 ninja-build，防患于未然
+          sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib cmake build-essential python3 python3-pip python3-pyelftools meson ninja-build
 
       - name: Build mpy-cross and Fetch Submodules
         if: env.SKIP != 'true'
@@ -87,9 +88,9 @@ jobs:
           mkdir -p lib/pico-sdk/src/boards/include/boards
           mkdir -p ports/rp2/boards/RP2350_ZD25Q32D
 
-          # 2. 【核心修复】强制 pico-sdk 全局禁用 picolibc，避免其从源码构建失败
-          # 使用 CACHE FORCE 确保覆盖底层工具链的默认设置
-          echo "set(PICO_USE_PICOLIBC 0 CACHE BOOL \"Disable picolibc\" FORCE)" >> lib/pico-sdk/CMakeLists.txt
+          # 2. 【核心终极修复】直接修改 pico-sdk 源码，强制跳过 picolibc 查找
+          # 在 Findpicolibc.cmake 第一行插入 return()，彻底阻断其下载和编译逻辑
+          sed -i '1i return()' lib/pico-sdk/tools/Findpicolibc.cmake
 
           # 3. SDK 层：Flash 引导配置与分频设置
           cat << 'EOF' > lib/pico-sdk/src/boards/include/boards/rp2350_zd25q32d.h
@@ -128,32 +129,31 @@ jobs:
           }
           EOF
 
-          # 5. 板级 CMake 配置 (包含 XIP 强制嵌入与链接器选项)
+          # 5. 板级 CMake 配置
           cat << 'EOF' > ports/rp2/boards/RP2350_ZD25Q32D/mpconfigboard.cmake
           set(PICO_BOARD "rp2350_zd25q32d")
           set(PICO_DEFAULT_BOOT_STAGE2 "boot2_generic_03h")
           
-          # 再次强制禁用 picolibc，双重保险
-          set(PICO_USE_PICOLIBC 0 CACHE BOOL "Disable picolibc" FORCE)
+          # 再次强制声明不使用 picolibc
+          set(PICO_USE_PICOLIBC 0)
           
           # 强制嵌入 Boot2 引导
           set(PICO_EMBED_XIP_SETUP 1)
           
           set(MICROPY_HW_FLASH_STORAGE_BYTES 3145728)
           
-          # 链接选项与源码注册 (使用绝对路径确保准确找到 usb_wrap.c)
+          # 链接选项与源码注册
           target_link_options(${MICROPY_TARGET} PRIVATE "-Wl,--wrap=dcd_event_handler")
           target_sources(${MICROPY_TARGET} PRIVATE ${CMAKE_CURRENT_LIST_DIR}/usb_wrap.c)
           EOF
 
-          # 6. 板级头文件 (配置全部硬件外设引脚与流控宏)
+          # 6. 板级头文件
           cat << 'EOF' > ports/rp2/boards/RP2350_ZD25Q32D/mpconfigboard.h
           #define MICROPY_HW_BOARD_NAME "RP2350A ZD25Q32D Custom"
           #define PICO_RP2350A 1
           
           #define MICROPY_HW_FLASH_MAX_FREQ (18750000)
           
-          // UART0 引脚及流控配置 (-1 表示无硬件流控)
           #define MICROPY_HW_UART0_TX (12)
           #define MICROPY_HW_UART0_RX (13)
           #define MICROPY_HW_UART0_CTS (-1)
@@ -172,7 +172,9 @@ jobs:
         if: env.SKIP != 'true'
         run: |
           cd ports/rp2
-          # 再次在命令行强制传递禁用参数，确保万无一失
+          # 彻底清理旧的构建缓存，防止 CMake 读取旧变量
+          rm -rf build-RP2350_ZD25Q32D
+          # 再次传递禁用参数
           make BOARD=RP2350_ZD25Q32D -j$(nproc) PICO_USE_PICOLIBC=0
 
       - name: Prepare Named UF2 File
