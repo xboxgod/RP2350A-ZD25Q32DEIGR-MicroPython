@@ -83,11 +83,9 @@ jobs:
       - name: Create Custom SDK & MicroPython Board Profiles
         if: env.SKIP != 'true'
         run: |
-          # 1. 预创建所有需要的目录
           mkdir -p lib/pico-sdk/src/boards/include/boards
           mkdir -p ports/rp2/boards/RP2350_ZD25Q32D
 
-          # 2. SDK 层：Flash 引导配置与分频设置
           cat << 'EOF' > lib/pico-sdk/src/boards/include/boards/rp2350_zd25q32d.h
           #ifndef _BOARDS_RP2350_ZD25Q32D_H
           #define _BOARDS_RP2350_ZD25Q32D_H
@@ -109,7 +107,6 @@ jobs:
           #endif
           EOF
 
-          # 3. 编写带 Task 唤醒调度的 usb_wrap.c 文件
           cat << 'EOF' > ports/rp2/boards/RP2350_ZD25Q32D/usb_wrap.c
           #include "tusb.h"
           #include "shared/tinyusb/mp_usbd.h"
@@ -124,40 +121,25 @@ jobs:
           }
           EOF
 
-          # 4. 板级 CMake 配置 (核心修正区)
           cat << 'EOF' > ports/rp2/boards/RP2350_ZD25Q32D/mpconfigboard.cmake
           set(PICO_BOARD "rp2350_zd25q32d")
           set(PICO_DEFAULT_BOOT_STAGE2 "boot2_generic_03h")
-          
-          # 关键修复1：强制使用 newlib，避免 pico-sdk 在 Ubuntu 上尝试编译 picolibc 失败
-          set(PICO_USE_PICOLIBC 0)
-          
-          # 关键修复2：以 CMake 变量形式启用 Boot2 嵌入 (上一版写法有误，这次必须这样写)
           set(PICO_EMBED_XIP_SETUP 1)
-          
           set(MICROPY_HW_FLASH_STORAGE_BYTES 3145728)
-          
-          # 链接选项与源码注册
           target_link_options(${MICROPY_TARGET} PRIVATE "-Wl,--wrap=dcd_event_handler")
           target_sources(${MICROPY_TARGET} PRIVATE usb_wrap.c)
           EOF
 
-          # 5. 板级头文件 (配置全部硬件外设引脚与流控宏)
           cat << 'EOF' > ports/rp2/boards/RP2350_ZD25Q32D/mpconfigboard.h
           #define MICROPY_HW_BOARD_NAME "RP2350A ZD25Q32D Custom"
           #define PICO_RP2350A 1
-          
           #define MICROPY_HW_FLASH_MAX_FREQ (18750000)
-          
-          // UART0 引脚及流控配置 (-1 表示无硬件流控)
           #define MICROPY_HW_UART0_TX (12)
           #define MICROPY_HW_UART0_RX (13)
           #define MICROPY_HW_UART0_CTS (-1)
           #define MICROPY_HW_UART0_RTS (-1)
-          
           #define MICROPY_HW_I2C0_SDA (0)
           #define MICROPY_HW_I2C0_SCL (1)
-          
           #define MICROPY_HW_SPI0_SCK (18)
           #define MICROPY_HW_SPI0_MOSI (19)
           #define MICROPY_HW_SPI0_MISO (16)
@@ -168,7 +150,7 @@ jobs:
         if: env.SKIP != 'true'
         run: |
           cd ports/rp2
-          make BOARD=RP2350_ZD25Q32D -j$(nproc)
+          make BOARD=RP2350_ZD25Q32D -j$(nproc) PICO_USE_PICOLIBC=0
 
       - name: Prepare Named UF2 File
         if: env.SKIP != 'true'
