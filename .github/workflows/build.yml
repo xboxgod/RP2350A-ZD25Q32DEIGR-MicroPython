@@ -27,7 +27,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           LATEST_TAG=$(curl -s -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/micropython/micropython/releases/latest | jq -r .tag_name)
-          if [ "$LATEST_TAG" = "null" ] \vert{}\vert{} [ -z "$LATEST_TAG" ]; then
+          if [ "$LATEST_TAG" = "null" ] || [ -z "$LATEST_TAG" ]; then
             echo "获取最新版本失败！"
             exit 1
           fi
@@ -83,51 +83,74 @@ jobs:
       - name: Create Custom SDK & MicroPython Board Profiles
         if: env.SKIP != 'true'
         run: |
-          # 1. SDK 层：配置型号、容量与 Boot2 单线引导 (CLKDIV 8)
+          # 1. 预创建所有需要的目录
           mkdir -p lib/pico-sdk/src/boards/include/boards
+          mkdir -p ports/rp2/boards/RP2350_ZD25Q32D
+
+          # 2. SDK 层：Flash 引导配置与分频设置
+          cat << 'EOF' > lib/pico-sdk/src/boards/include/boards/rp2350_zd25q32d.h
+          #ifndef _BOARDS_RP2350_ZD25Q32D_H
+          #define _BOARDS_RP2350_ZD25Q32D_H
+          
+          pico_board_cmake_set(PICO_PLATFORM, rp2350)
+          pico_board_cmake_set_default(PICO_FLASH_SIZE_BYTES, (4 * 1024 * 1024))
+          
+          #define PICO_BOOT_STAGE2_CHOOSE_GENERIC_03H 1
+          #define PICO_FLASH_SPI_CLKDIV 8
+          
+          #ifndef PICO_FLASH_SIZE_BYTES
+          #define PICO_FLASH_SIZE_BYTES (4 * 1024 * 1024)
+          #endif
+          
+          #define PICO_DEFAULT_I2C 0
+          #define PICO_DEFAULT_SPI 0
+          #define PICO_DEFAULT_UART 0
+          
+          #endif
+          EOF
+
+          # 3. 编写带 Task 唤醒调度的 usb_wrap.c 文件
+          cat << 'EOF' > ports/rp2/boards/RP2350_ZD25Q32D/usb_wrap.c
+          #include "tusb.h"
+          #include "shared/tinyusb/mp_usbd.h"
+          #include "py/mphal.h"
+
+          extern void __real_dcd_event_handler(dcd_event_t const *event, bool in_isr);
+
+          void __wrap_dcd_event_handler(dcd_event_t const *event, bool in_isr) {
+              __real_dcd_event_handler(event, in_isr);
+              mp_usbd_schedule_task();
+              mp_hal_wake_main_task_from_isr();
+          }
+          EOF
+
+          # 4. 板级 CMake 配置 (包含 XIP 强制嵌入与链接器选项)
+          cat << 'EOF' > ports/rp2/boards/RP2350_ZD25Q32D/mpconfigboard.cmake
+          set(PICO_BOARD "rp2350_zd25q32d")
+          set(PICO_DEFAULT_BOOT_STAGE2 "boot2_generic_03h")
+          
+          # 强制嵌入 Boot2 引导
+          set(PICO_EMBED_XIP_SETUP 1)
+          
+          set(MICROPY_HW_FLASH_STORAGE_BYTES 3145728)
+          
+          # 链接选项与源码注册 (精准绑定到固件目标)
+          target_link_options(${MICROPY_TARGET} PRIVATE "-Wl,--wrap=dcd_event_handler")
+          target_sources(${MICROPY_TARGET} PRIVATE usb_wrap.c)
+          EOF
+
+          # 5. 板级头文件 (配置全部硬件外设引脚与流控宏)
           cat << 'EOF' > ports/rp2/boards/RP2350_ZD25Q32D/mpconfigboard.h
           #define MICROPY_HW_BOARD_NAME "RP2350A ZD25Q32D Custom"
           #define PICO_RP2350A 1
           
           #define MICROPY_HW_FLASH_MAX_FREQ (18750000)
           
-          // UART0 引脚映射：指定 TX/RX 并显式关闭 CTS/RTS 硬件流控
+          // UART0 引脚及流控配置 (-1 表示无硬件流控)
           #define MICROPY_HW_UART0_TX (12)
           #define MICROPY_HW_UART0_RX (13)
           #define MICROPY_HW_UART0_CTS (-1)
           #define MICROPY_HW_UART0_RTS (-1)
-          
-          #define MICROPY_HW_I2C0_SDA (0)
-          #define MICROPY_HW_I2C0_SCL (1)
-          
-          #define MICROPY_HW_SPI0_SCK (18)
-          #define MICROPY_HW_SPI0_MOSI (19)
-          #define MICROPY_HW_SPI0_MISO (16)
-          #define MICROPY_HW_SPI0_CS (17)
-          EOF
-          
-          # 2. MicroPython 层：处理 XIP 嵌入与 MP 专属引脚映射
-          mkdir -p ports/rp2/boards/RP2350_ZD25Q32D
-          
-          cat << 'EOF' > ports/rp2/boards/RP2350_ZD25Q32D/mpconfigboard.cmake
-          set(PICO_BOARD "rp2350_zd25q32d")
-          
-          # 强制将选定的 03h Boot2 嵌入最终固件 (RP2350 必须)
-          set(PICO_EMBED_XIP_SETUP 1)
-          
-          set(MICROPY_HW_FLASH_STORAGE_BYTES 3145728)
-          EOF
-          
-          cat << 'EOF' > ports/rp2/boards/RP2350_ZD25Q32D/mpconfigboard.h
-          #define MICROPY_HW_BOARD_NAME "RP2350A ZD25Q32D Custom"
-          #define PICO_RP2350A 1
-          
-          // 与 Boot2 的 CLKDIV 8 严格对齐 (150MHz / 8 = 18.75MHz)，确保 QSPI_SS 信号完整性
-          #define MICROPY_HW_FLASH_MAX_FREQ (18750000)
-          
-          // MicroPython 专属的 I2C/SPI/UART 外设引脚映射
-          #define MICROPY_HW_UART0_TX (12)
-          #define MICROPY_HW_UART0_RX (13)
           
           #define MICROPY_HW_I2C0_SDA (0)
           #define MICROPY_HW_I2C0_SCL (1)
@@ -165,5 +188,6 @@ jobs:
             
             底层核心修正项：
             1. **Boot2 引导**：启用 `PICO_BOOT_STAGE2_CHOOSE_GENERIC_03H` 与 `PICO_EMBED_XIP_SETUP 1` 确保固件正确挂载执行。
-            2. **Flash 时钟对齐**：SDK 引导期 (`CLKDIV 8`) 与 MicroPython 运行期 (`MICROPY_HW_FLASH_MAX_FREQ`) 严格对齐至 18.75MHz，防止运行时越级提速导致信号畸变掉盘。
-            3. **引脚映射**：MicroPython 级全映射 UART0(12/13)、I2C0(0/1)、SPI0(16/17/18/19)。
+            2. **Flash 时钟对齐**：引导期与运行期严格对齐至 18.75MHz。
+            3. **USB 寄存器回溯修复**：配置 `--wrap=dcd_event_handler` 并正确注册带调度唤醒的 `usb_wrap.c`。
+            4. **全套引脚映射**：UART0(12/13, 无流控)、I2C0(0/1)、SPI0(16/17/18/19)。
