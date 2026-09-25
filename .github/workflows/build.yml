@@ -85,26 +85,25 @@ jobs:
         run: |
           # 1. SDK 层：配置型号、容量与 Boot2 单线引导 (CLKDIV 8)
           mkdir -p lib/pico-sdk/src/boards/include/boards
-          cat << 'EOF' > lib/pico-sdk/src/boards/include/boards/rp2350_zd25q32d.h
-          #ifndef _BOARDS_RP2350_ZD25Q32D_H
-          #define _BOARDS_RP2350_ZD25Q32D_H
+          cat << 'EOF' > ports/rp2/boards/RP2350_ZD25Q32D/mpconfigboard.h
+          #define MICROPY_HW_BOARD_NAME "RP2350A ZD25Q32D Custom"
+          #define PICO_RP2350A 1
           
-          pico_board_cmake_set(PICO_PLATFORM, rp2350)
-          pico_board_cmake_set_default(PICO_FLASH_SIZE_BYTES, (4 * 1024 * 1024))
+          #define MICROPY_HW_FLASH_MAX_FREQ (18750000)
           
-          #define PICO_BOOT_STAGE2_CHOOSE_GENERIC_03H 1
-          #define PICO_FLASH_SPI_CLKDIV 8
+          // UART0 引脚映射：指定 TX/RX 并显式关闭 CTS/RTS 硬件流控
+          #define MICROPY_HW_UART0_TX (12)
+          #define MICROPY_HW_UART0_RX (13)
+          #define MICROPY_HW_UART0_CTS (-1)
+          #define MICROPY_HW_UART0_RTS (-1)
           
-          #ifndef PICO_FLASH_SIZE_BYTES
-          #define PICO_FLASH_SIZE_BYTES (4 * 1024 * 1024)
-          #endif
+          #define MICROPY_HW_I2C0_SDA (0)
+          #define MICROPY_HW_I2C0_SCL (1)
           
-          // 仅作 C 语言层的基础宏占位，实际引脚由 mpconfigboard.h 接管
-          #define PICO_DEFAULT_I2C 0
-          #define PICO_DEFAULT_SPI 0
-          #define PICO_DEFAULT_UART 0
-          
-          #endif
+          #define MICROPY_HW_SPI0_SCK (18)
+          #define MICROPY_HW_SPI0_MOSI (19)
+          #define MICROPY_HW_SPI0_MISO (16)
+          #define MICROPY_HW_SPI0_CS (17)
           EOF
           
           # 2. MicroPython 层：处理 XIP 嵌入与 MP 专属引脚映射
