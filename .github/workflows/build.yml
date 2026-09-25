@@ -87,23 +87,27 @@ jobs:
           BOARD_DIR="ports/rp2/boards/RETROMAGIC_RP2350A"
           mkdir -p $BOARD_DIR
 
-          # 【核心修正】在 ports/rp2/CMakeLists.txt 的最顶部强制注入平台定义
-          # 使用 CACHE ... FORCE 防止被后续逻辑覆盖，这是解决“编译成RP2040”问题的关键
-          sed -i '1i set(PICO_PLATFORM "rp2350" CACHE STRING "" FORCE)' ports/rp2/CMakeLists.txt
-
-          # 板级 CMake 配置文件 (平台已由 CMakeLists.txt 保证，此处只配置板级参数)
+          # 【核心逻辑修正】借用 pico2 的合法身份，强制走 RP2350 工具链
           cat << 'EOF' > $BOARD_DIR/mpconfigboard.cmake
           # RetroMagic RP2350A 专用板级配置
-          set(PICO_BOARD "retromagic_rp2350a")
+          
+          # 关键：必须指定为 pico2，告诉 pico-sdk 使用 RP2350 工具链 (cortex-m33)
+          set(PICO_BOARD "pico2")
           set(PICO_BOARD_HEADER_DIRS ${CMAKE_CURRENT_LIST_DIR})
           
-          # Flash 存储空间分配：4MB 中预留 3MB 给文件系统
+          # 强制指定平台为 rp2350，双保险
+          set(PICO_PLATFORM "rp2350")
+          
+          # Flash 引导与时钟配置
+          set(PICO_EMBED_XIP_SETUP 1)
+          set(PICO_BOOT_STAGE2_CHOOSE_GENERIC_03H 1)
+          set(PICO_FLASH_SPI_CLKDIV 8)
+          
+          # 4MB 中预留 3MB 给文件系统
           set(MICROPY_HW_FLASH_STORAGE_BYTES 3145728)
           
           # 注册 USB 修复源码
           target_sources(${MICROPY_TARGET} PRIVATE ${CMAKE_CURRENT_LIST_DIR}/usb_wrap.c)
-          
-          # 添加 USB 修复的链接选项
           target_link_options(${MICROPY_TARGET} PRIVATE "-Wl,--wrap=dcd_event_handler")
           EOF
 
@@ -132,7 +136,7 @@ jobs:
           #define MICROPY_HW_SPI0_CS (17)
           EOF
 
-          # USB 包装修复文件 (针对 TinyUSB 枚举回归问题)
+          # USB 包装修复文件
           cat << 'EOF' > $BOARD_DIR/usb_wrap.c
           #include "tusb.h"
           #include "mp_usbd.h"
@@ -147,41 +151,14 @@ jobs:
           }
           EOF
 
-          # SDK 层板级头文件 (Flash 引导与分频配置)
-          mkdir -p lib/pico-sdk/src/boards/include/boards
-          cat << 'EOF' > lib/pico-sdk/src/boards/include/boards/retromagic_rp2350a.h
-          #ifndef _BOARDS_RETROMAGIC_RP2350A_H
-          #define _BOARDS_RETROMAGIC_RP2350A_H
-          
-          pico_board_cmake_set(PICO_PLATFORM, rp2350)
-          pico_board_cmake_set_default(PICO_FLASH_SIZE_BYTES, (4 * 1024 * 1024))
-          
-          // 使用最保守的单线 03h 模式，确保 Flash 兼容性
-          #define PICO_BOOT_STAGE2_CHOOSE_GENERIC_03H 1
-          #define PICO_FLASH_SPI_CLKDIV 8
-          
-          // 强制嵌入 boot2 引导 (RP2350 必须)
-          #define PICO_EMBED_XIP_SETUP 1
-          
-          #ifndef PICO_FLASH_SIZE_BYTES
-          #define PICO_FLASH_SIZE_BYTES (4 * 1024 * 1024)
-          #endif
-          
-          #define PICO_DEFAULT_I2C 0
-          #define PICO_DEFAULT_SPI 0
-          #define PICO_DEFAULT_UART 0
-          
-          #endif
-          EOF
-
       - name: Compile RetroMagic RP2350A Firmware
         if: env.SKIP != 'true'
         run: |
           cd ports/rp2
           rm -rf build-RETROMAGIC_RP2350A
-          # 通过 CMAKE_ARGS 传递 -DPICO_PLATFORM=rp2350 作为双保险
-          make BOARD=RETROMAGIC_RP2350A -j$(nproc) \
-            CMAKE_ARGS="-DPICO_USE_PICOLIBC=0 -DPICO_PLATFORM=rp2350"
+          # 通过 PICO_BOARD=pico2 彻底锁定 RP2350 平台
+          make BOARD=RETROMAGIC_RP2350A PICO_BOARD=pico2 -j$(nproc) \
+            CMAKE_ARGS="-DPICO_USE_PICOLIBC=0"
 
       - name: Verify Firmware
         if: env.SKIP != 'true'
@@ -191,8 +168,8 @@ jobs:
           xxd -s 28 -l 4 build-RETROMAGIC_RP2350A/firmware.uf2
           echo "期望输出: 59 ff 8b e4 (RP2350 ARM-S)"
           echo ""
-          echo "=== 检查 RAM 大小（应为 520 KB）==="
-          grep -i "RAM" build-RETROMAGIC_RP2350A/CMakeFiles/firmware.dir/link.txt || true
+          echo "=== 检查 CPU 架构（应包含 cortex-m33）==="
+          grep -o "cortex-[a-z0-9]*" build-RETROMAGIC_RP2350A/CMakeFiles/firmware.dir/link.txt | head -n 1 || true
 
       - name: Prepare Named UF2 File
         if: env.SKIP != 'true'
@@ -216,8 +193,8 @@ jobs:
             基于 MicroPython ${{ env.LATEST_TAG }} 为 RetroMagic RP2350A 定制板编译。
             
             板级配置：
-            1. **平台**：通过在 `ports/rp2/CMakeLists.txt` 顶部强制注入 `PICO_PLATFORM=rp2350`，确保编译正确的 Cortex-M33 代码。
-            2. **Boot2 引导**：使用 `boot2_generic_03h`（单线 03h 模式），启用 `PICO_EMBED_XIP_SETUP` 确保嵌入。
+            1. **平台**：通过 `PICO_BOARD=pico2` 借用合法身份，强制使用 RP2350 (Cortex-M33) 工具链。
+            2. **Boot2 引导**：使用 `boot2_generic_03h`（单线 03h 模式），启用 `PICO_EMBED_XIP_SETUP`。
             3. **Flash 时钟**：引导期与运行期均限制在 18.75MHz，确保 ZD25Q32D 时序稳定。
             4. **USB 修复**：注入 `--wrap=dcd_event_handler` 修复高版本 TinyUSB 枚举问题。
             5. **引脚映射**：UART0(12/13)、I2C0(0/1)、SPI0(16/17/18/19)。
