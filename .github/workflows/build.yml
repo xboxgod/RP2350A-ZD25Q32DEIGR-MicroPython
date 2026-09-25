@@ -87,31 +87,32 @@ jobs:
           BOARD_DIR="ports/rp2/boards/RETROMAGIC_RP2350A"
           mkdir -p $BOARD_DIR
 
+          # 1. 配置文件：强行锁死 PICO_PLATFORM 为 rp2350，并配置兼容 ZD25Q32D 的 Boot2 (03h 单线模式)
           cat << 'EOF' > $BOARD_DIR/mpconfigboard.cmake
-          # 1. 强制锁死 PICO_PLATFORM 为 rp2350 (ARM Cortex-M33)
           set(PICO_PLATFORM rp2350 CACHE STRING "" FORCE)
           set(PICO_BOARD pico2 CACHE STRING "" FORCE)
 
-          # 2. 核心修复：强制 Stage2 使用最稳定的单线 03h 引导，解决 ZD25Q32D QSPI 死机问题
+          # 降频与03h引导，彻底避开 ZD25Q32D QSPI/QE 状态位变砖问题
           set(PICO_DEFAULT_BOOT_STAGE2 boot2_generic_03h CACHE STRING "" FORCE)
           set(PICO_FLASH_SPI_CLKDIV 4 CACHE STRING "" FORCE)
 
-          # 3. Flash 容量定义 (4MB 总空间，留 3MB 给内部文件系统)
+          # Flash 存储配置 (4MB 空间中预留 3MB 给内部文件系统)
           set(MICROPY_HW_FLASH_STORAGE_BYTES 3145728)
 
-          # 4. 链接 TinyUSB 修复代码
+          # 注入 USB 枚举补丁
           target_sources(${MICROPY_TARGET} PRIVATE${CMAKE_CURRENT_LIST_DIR}/usb_wrap.c)
           target_link_options(${MICROPY_TARGET} PRIVATE "-Wl,--wrap=dcd_event_handler")
           EOF
 
+          # 2. 板级 C 头文件定义
           cat << 'EOF' > $BOARD_DIR/mpconfigboard.h
           #define MICROPY_HW_BOARD_NAME "RetroMagic RP2350A"
           #define MICROPY_HW_MCU_NAME "RP2350A"
 
-          // 限制 Flash 最大频率，保证 ZD25Q32D 时序稳健
+          // Flash 运行主频控制在 24MHz
           #define MICROPY_HW_FLASH_MAX_FREQ (24000000)
 
-          // RetroMagic 引脚映射
+          // 核心 IO 映射
           #define MICROPY_HW_UART0_TX (12)
           #define MICROPY_HW_UART0_RX (13)
           #define MICROPY_HW_UART0_CTS (-1)
@@ -126,6 +127,7 @@ jobs:
           #define MICROPY_HW_SPI0_CS (17)
           EOF
 
+          # 3. USB 稳健性修正
           cat << 'EOF' > $BOARD_DIR/usb_wrap.c
           #include "tusb.h"
           #include "mp_usbd.h"
@@ -146,10 +148,11 @@ jobs:
           cd ports/rp2
           rm -rf build-RETROMAGIC_RP2350A
           
-          # 【最关键一步】显式向 CMake 注入 -DPICO_PLATFORM=rp2350
-          make BOARD=RETROMAGIC_RP2350A -j$(nproc) CMAKE_ARGS="-DPICO_PLATFORM=rp2350 -DPICO_USE_PICOLIBC=0"
+          # 【最核心修复】：必须直接给 make 传递 BOARD_TYPE=rp2350！
+          # 否则 MicroPython Makefile 会强制覆盖 CMAKE_ARGS 为 rp2040
+          make BOARD=RETROMAGIC_RP2350A BOARD_TYPE=rp2350 -j$(nproc) CMAKE_ARGS="-DPICO_PLATFORM=rp2350 -DPICO_BOARD=pico2 -DPICO_USE_PICOLIBC=0"
 
-      - name: Verify Firmware
+      - name: Verify Firmware Architecture
         if: env.SKIP != 'true'
         run: |
           cd ports/rp2
@@ -158,7 +161,7 @@ jobs:
           echo "=== 检查 UF2 家族 ID ==="
           HEX_ID=$(xxd -s 28 -l 4 "$UF2_FILE" | awk '{print $2$3}')
           echo "读取到的 Family ID 16进制: $HEX_ID"
-          echo "期望匹配: 59ff 8be4 (对应 RP2350 ARM-S 架构)"
+          echo "预期说明: 59ff 8be4 代表正确编成了 RP2350 ARM-S (Cortex-M33) 架构！"
           
           echo "=== 检查 CPU 编译器目标架构 ==="
           grep -o "cortex-[a-z0-9]*" build-RETROMAGIC_RP2350A/CMakeFiles/firmware.dir/link.txt | head -n 1 || true
@@ -180,9 +183,9 @@ jobs:
           fail_on_unmatched_files: true
           files: ${{ env.TARGET_FILENAME }}
           body: |
-            【RetroMagic RP2350A 专用 MicroPython 固件】
+            【RetroMagic RP2350A 专用固件】
 
-            核心适配修正：
-            1. **架构锁定**：通过 `-DPICO_PLATFORM=rp2350` 编译生成的 Cortex-M33 架构固件（UF2 Family ID: `0xe48bff59`）。
-            2. **Flash 兼容性**：针对 ZD25Q32D 采用 `boot2_generic_03h` 稳健引导，规避 QSPI 0ebh 变砖问题。
-            3. **USB 状态修复**：集成 TinyUSB 事件包装，保证上电枚举流畅。
+            硬件适配说明：
+            1. **芯片架构**：通过 `BOARD_TYPE=rp2350` 编译生成的 **ARM Cortex-M33 (RP2350)** 目标架构（UF2 Family ID: `0xe48bff59`）。
+            2. **Flash 兼容性**：针对澜智 ZD25Q32D 采用 `boot2_generic_03h` 单线 Bootloader 引导，解决 QSPI 0ebh 指令变砖问题。
+            3. **引脚映射**：UART0(12/13)、I2C0(0/1)、SPI0(16/17/18/19)。
