@@ -81,34 +81,36 @@ jobs:
           make -C ports/rp2 submodules
           git submodule update --init --recursive lib/pico-sdk || true
 
-      - name: Patch Official RPI_PICO2 Board Files
+      - name: Create Official-Compliant RetroMagic Board
         if: env.SKIP != 'true'
         run: |
-          # 直接覆盖官方 RPI_PICO2 板级目录，避开 Makefile 的自定义板卡陷阱
-          BOARD_DIR="ports/rp2/boards/RPI_PICO2"
+          BOARD_DIR="ports/rp2/boards/RETROMAGIC_RP2350A"
+          mkdir -p $BOARD_DIR
 
-          # 1. 覆盖 mpconfigboard.cmake
+          # 1. 严格按照官方套路：通过 CACHE FORCE 强行注入 PICO_BOARD=pico2，激活 RP2350/Cortex-M33 构建链
           cat << 'EOF' > $BOARD_DIR/mpconfigboard.cmake
-          # 针对 ZD25Q32D 强制换成单线 03h 引导与分频，防止死机变砖
-          set(PICO_DEFAULT_BOOT_STAGE2 "boot2_generic_03h" CACHE STRING "" FORCE)
+          set(PICO_BOARD pico2 CACHE STRING "" FORCE)
+          set(PICO_PLATFORM rp2350 CACHE STRING "" FORCE)
+
+          # 针对 ZD25Q32D 覆盖 Boot2 引导为单线 03h 模式并降低分频，保证启动稳定性
+          set(PICO_DEFAULT_BOOT_STAGE2 boot2_generic_03h CACHE STRING "" FORCE)
           set(PICO_FLASH_SPI_CLKDIV 4 CACHE STRING "" FORCE)
 
-          # Flash 文件系统容量 (预留 3MB 给内部文件系统)
+          # 4MB Flash (预留 3MB 给内部文件系统)
           set(MICROPY_HW_FLASH_STORAGE_BYTES 3145728)
 
-          # USB 补丁
+          # TinyUSB 事件分发补丁
           target_sources(${MICROPY_TARGET} PRIVATE${CMAKE_CURRENT_LIST_DIR}/usb_wrap.c)
           target_link_options(${MICROPY_TARGET} PRIVATE "-Wl,--wrap=dcd_event_handler")
           EOF
 
-          # 2. 覆盖 mpconfigboard.h，定制 RetroMagic 名称与引脚
+          # 2. 板级引脚与硬件配置
           cat << 'EOF' > $BOARD_DIR/mpconfigboard.h
           #define MICROPY_HW_BOARD_NAME "RetroMagic RP2350A"
           #define MICROPY_HW_MCU_NAME "RP2350A"
 
           #define MICROPY_HW_FLASH_MAX_FREQ (24000000)
 
-          // 核心引脚配置
           #define MICROPY_HW_UART0_TX (12)
           #define MICROPY_HW_UART0_RX (13)
           #define MICROPY_HW_UART0_CTS (-1)
@@ -123,7 +125,7 @@ jobs:
           #define MICROPY_HW_SPI0_CS (17)
           EOF
 
-          # 3. 写入 USB 修复封装
+          # 3. TinyUSB C 逻辑包装
           cat << 'EOF' > $BOARD_DIR/usb_wrap.c
           #include "tusb.h"
           #include "mp_usbd.h"
@@ -142,16 +144,16 @@ jobs:
         if: env.SKIP != 'true'
         run: |
           cd ports/rp2
-          rm -rf build-RPI_PICO2
+          rm -rf build-RETROMAGIC_RP2350A
           
-          # 直接编译原生认可的 RPI_PICO2 板子
-          make BOARD=RPI_PICO2 -j$(nproc) CMAKE_ARGS="-DPICO_USE_PICOLIBC=0"
+          # 【最关键参数】：直接在 CMake 命令行注入 -DPICO_BOARD=pico2 -DPICO_PLATFORM=rp2350
+          make BOARD=RETROMAGIC_RP2350A -j$(nproc) CMAKE_ARGS="-DPICO_BOARD=pico2 -DPICO_PLATFORM=rp2350 -DPICO_USE_PICOLIBC=0"
 
       - name: Verify Firmware Architecture
         if: env.SKIP != 'true'
         run: |
           cd ports/rp2
-          UF2_FILE="build-RPI_PICO2/firmware.uf2"
+          UF2_FILE="build-RETROMAGIC_RP2350A/firmware.uf2"
           
           echo "=== 检查 UF2 家族 ID ==="
           HEX_ID=$(xxd -s 28 -l 4 "$UF2_FILE" | awk '{print $2$3}')
@@ -159,13 +161,13 @@ jobs:
           echo "预期匹配: 59ff 8be4 (对应 RP2350 ARM-S 架构)"
           
           echo "=== 检查 CPU 编译器目标架构 ==="
-          grep -o "cortex-[a-z0-9]*" build-RPI_PICO2/CMakeFiles/firmware.dir/link.txt | head -n 1 || true
+          grep -o "cortex-[a-z0-9]*" build-RETROMAGIC_RP2350A/CMakeFiles/firmware.dir/link.txt | head -n 1 || true
 
       - name: Prepare Named UF2 File
         if: env.SKIP != 'true'
         run: |
           TARGET_FILENAME="RetroMagic_RP2350A_ZD25Q32D-${LATEST_TAG}.uf2"
-          mv ports/rp2/build-RPI_PICO2/firmware.uf2 "${TARGET_FILENAME}"
+          mv ports/rp2/build-RETROMAGIC_RP2350A/firmware.uf2 "${TARGET_FILENAME}"
           echo "TARGET_FILENAME=${TARGET_FILENAME}" >> $GITHUB_ENV
 
       - name: Publish to GitHub Releases
@@ -180,7 +182,7 @@ jobs:
           body: |
             【RetroMagic RP2350A 专用固件】
 
-            硬件适配说明：
-            1. **芯片架构**：基于官方 Pico 2（RPI_PICO2）底层编译，锁定 **ARM Cortex-M33 (RP2350)** 架构（UF2 Family ID: `0xe48bff59`）。
-            2. **Flash 兼容性**：针对澜智 ZD25Q32D 采用 `boot2_generic_03h` 单线 Bootloader 引导，解决 4-line QSPI 变砖死机问题。
-            3. **板级定义**：已替换为 RetroMagic 端口配置，UART0(12/13)、I2C0(0/1)、SPI0(16/17/18/19)。
+            核心硬件适配：
+            1. **芯片架构**：通过 `-DPICO_BOARD=pico2 -DPICO_PLATFORM=rp2350` 参数正确激活 **ARM Cortex-M33 (RP2350)** 目标架构（UF2 Family ID: `0xe48bff59`）。
+            2. **Flash 兼容性**：针对澜智 ZD25Q32D (USON-8) 采用 `boot2_generic_03h` 单线 Bootloader 引导，解决 4-line QSPI 变砖死机问题。
+            3. **引脚映射**：UART0(12/13)、I2C0(0/1)、SPI0(16/17/18/19)。
