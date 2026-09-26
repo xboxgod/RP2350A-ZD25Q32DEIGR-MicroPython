@@ -2,14 +2,8 @@ name: Build RetroMagic RP2350A
 
 on:
   schedule:
-    - cron: '0 2 * * *' # 每天北京时间 10:00 (UTC 02:00) 自动检查官方更新
-  workflow_dispatch:
-    inputs:
-      force_rebuild:
-        description: '强制重新编译 (即使官方未更新)'
-        required: false
-        type: boolean
-        default: false
+    - cron: '0 2 * * *' # 每天北京时间 10:00 (UTC 02:00) 自动巡检
+  workflow_dispatch:     # 保留手动触发按钮（无任何复杂选框）
 
 concurrency:
   group: ${{ github.workflow }}
@@ -27,8 +21,8 @@ jobs:
           repository: micropython/micropython
           ref: master
           submodules: recursive
-          fetch-depth: 0 # 获取完整 git 历史
-          fetch-tags: true # 显式拉取所有 Tag 以获取准确版本号
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Get MicroPython Official Version & Commit
         id: mp_info
@@ -41,7 +35,6 @@ jobs:
           echo "MP_VERSION=${MP_VERSION}" >> $GITHUB_ENV
           echo "DATE_TAG=${DATE_TAG}" >> $GITHUB_ENV
           
-          # 以 Commit 为 Tag 标识 Release
           RELEASE_TAG="v-${COMMIT_HASH}"
           echo "RELEASE_TAG=${RELEASE_TAG}" >> $GITHUB_ENV
           
@@ -53,20 +46,14 @@ jobs:
         id: check_release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          IS_FORCE: "${{ github.event.inputs.force_rebuild }}"
         run: |
-          if [ "$IS_FORCE" = "true" ]; then
-            echo "🚀 手动触发强制重新编译！"
-            echo "should_build=true" >> $GITHUB_OUTPUT
+          # 纯粹判断：只要这个 Commit 曾经发布过 Release，一律直接跳过
+          if gh release view "${{ env.RELEASE_TAG }}" --repo ${{ github.repository }} >/dev/null 2>&1; then
+            echo "☕ 官方 MicroPython 无新 Commit (已构建过 Tag: ${{ env.RELEASE_TAG }})，自动跳过。"
+            echo "should_build=false" >> $GITHUB_OUTPUT
           else
-            # 检查 Releases 中是否已经存在当前 Commit 的构建
-            if gh release view "${{ env.RELEASE_TAG }}" --repo ${{ github.repository }} >/dev/null 2>&1; then
-              echo "☕ 官方 MicroPython 无新 Commit (已构建过 Tag: ${{ env.RELEASE_TAG }})，自动跳过本次编译。"
-              echo "should_build=false" >> $GITHUB_OUTPUT
-            else
-              echo "⚡ 检测到官方 MicroPython 有新 Commit，触发自动编译！"
-              echo "should_build=true" >> $GITHUB_OUTPUT
-            fi
+            echo "⚡ 检测到官方 MicroPython 有新 Commit，触发编译！"
+            echo "should_build=true" >> $GITHUB_OUTPUT
           fi
 
       - name: Install Build Dependencies
@@ -104,7 +91,7 @@ jobs:
           set(PICO_EMBED_XIP_SETUP 1 CACHE STRING "" FORCE)
           add_compile_definitions(PICO_EMBED_XIP_SETUP=1)
 
-          # 5. 锁定 6 分频 (25MHz)，同时给 CMake 变量与 C 宏赋值
+          # 5. 锁定 6 分频 (25MHz)，保障国产 Flash 绝对稳定
           set(PICO_FLASH_SPI_CLKDIV 6 CACHE STRING "" FORCE)
           add_compile_definitions(PICO_FLASH_SPI_CLKDIV=6)
 
@@ -147,23 +134,18 @@ jobs:
         if: steps.check_release.outputs.should_build == 'true'
         run: |
           UF2_FILE="ports/rp2/build-RETROMAGIC_RP2350A/firmware.uf2"
-          
-          echo "=== 检查 UF2 Family ID (偏移 28-31 字节) ==="
           HEX_ID=$(xxd -s 28 -l 4 "$UF2_FILE" | awk '{print $2$3}')
-          echo "读取到的 Family ID 16进制 (Little Endian): $HEX_ID"
           
-          # RP2350 ARM-S 标准 Family ID: 0xe48bff59 -> 小端序为 59ff 8be4
           if [ "$HEX_ID" = "59ff8be4" ]; then
             echo "✅ 架构校验通过！确认为 RP2350 ARM Cortex-M33 架构固件。"
           else
-            echo "❌ 架构校验失败！读取到的 Family ID 与 RP2350 不匹配 ($HEX_ID)，终止发布！"
+            echo "❌ 架构校验失败！Family ID 不匹配 ($HEX_ID)，终止发布！"
             exit 1
           fi
 
       - name: Prepare Named UF2 File
         if: steps.check_release.outputs.should_build == 'true'
         run: |
-          # 过滤 MP_VERSION 中的特殊字符，防止文件名非法
           CLEAN_MP_VERSION=$(echo "${{ env.MP_VERSION }}" | tr '/' '_')
           TARGET_FILENAME="RetroMagic_RP2350A_4MB_${{ env.DATE_TAG }}_${CLEAN_MP_VERSION}.uf2"
           
