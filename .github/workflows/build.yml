@@ -170,10 +170,16 @@ jobs:
           fail_on_unmatched_files: true
           files: ${{ env.TARGET_FILENAME }}
           body: |
+            ### 🚀 RetroMagic RP2350A Industrial-Grade MicroPython Upstream Sync Firmware
             ### 🚀 RetroMagic RP2350A 工业级 MicroPython 官方同步固件
 
-            - **构建日期**：${{ env.DATE_TAG }}
-            - **官方 MicroPython 版本**：`${{ env.MP_VERSION }}` (Commit: `${{ env.COMMIT_HASH }}`)
-            - **内核架构**：ARM Cortex-M33 (`rp2350-arm-s` / UF2 Family ID: `0xe48bff57`)
-            - **Flash 防变砖策略**：6 分频 ($25\text{ MHz}$) + `PICO_EMBED_XIP_SETUP=1`，兼容Raspberry 2350A 配合多种品牌 4MB Flash 稳定性与兼容性。
-            - **存储空间**：4MB Flash (划分 2MB LittleFS 磁盘空间)。
+            ---
+
+            #### 📋 Release Notes / 发布说明
+
+            - **Build Date / 构建日期**: ${{ env.DATE_TAG }}
+            - **Upstream Version / 官方版本**: `${{ env.MP_VERSION }}` (Commit: `${{ env.COMMIT_HASH }}`)
+            - **Core Architecture / 内核架构**: ARM Cortex-M33 (`rp2350-arm-s` / UF2 Family ID: `0xe48bff57`)
+            - **Flash Hardening / Flash 防变砖策略**: 6-divider ($25\text{ MHz}$) + `PICO_EMBED_XIP_SETUP=1`, optimized for high stability and broad compatibility with 4MB Flash chips. (6 分频 + 驱动加固，完美兼容各类敏感 Flash 芯片，告别死锁)
+            - **Storage Layout / 存储空间**: 4MB Flash (Allocated with 2MB LittleFS storage space / 划分 2MB LittleFS 磁盘空间)
+```[cite: 4, 5]
