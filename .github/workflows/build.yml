@@ -177,9 +177,7 @@ jobs:
 
             #### 📋 Release Notes / 发布说明
 
-            * Build Date / 构建日期: ${{ env.DATE_TAG }}
-            * Upstream Version / 官方版本: `${{ env.MP_VERSION }}` (Commit: `${{ env.COMMIT_HASH }}`)
             * Core Architecture / 内核架构: ARM Cortex-M33 (`rp2350-arm-s` / UF2 Family ID: `0xe48bff57`)
-            * Flash Hardening / 防变砖策略: 6-divider ($25\text{ MHz}$) + `PICO_EMBED_XIP_SETUP=1` (6分频 + 驱动加固，完美兼容各类敏感 Flash 芯片，告别死锁)
+            * Flash Hardening / 防变砖策略: 6-divider (25 MHz) + PICO_EMBED_XIP_SETUP=1 (6分频 + 驱动加固，完美兼容各类敏感 Flash 芯片，告别死锁)
             * Storage Layout / 存储空间: 4MB Flash (Allocated with 2MB LittleFS storage space / 划分 2MB LittleFS 磁盘空间)
 ```[cite: 4, 5]
