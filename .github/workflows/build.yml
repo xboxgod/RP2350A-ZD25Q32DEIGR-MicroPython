@@ -2,8 +2,14 @@ name: Build RetroMagic RP2350A
 
 on:
   schedule:
-    - cron: '0 2 * * *' # 每天北京时间 10:00 (UTC 02:00) 自动巡检
-  workflow_dispatch:     # 保留手动触发按钮（无任何复杂选框）
+    - cron: '0 2 * * *' # 每天北京时间 10:00 自动巡检
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: '强制重新编译（跳过 Release 已存在检查）'
+        required: false
+        type: boolean
+        default: true # 手动点运行时，默认开启强制重新编译！
 
 concurrency:
   group: ${{ github.workflow }}
@@ -42,18 +48,26 @@ jobs:
           echo "官方 MicroPython 版本: ${MP_VERSION}"
           echo "构建日期: ${DATE_TAG}"
 
-      - name: Check If Release Already Exists
+      - name: Smart Check Build Eligibility
         id: check_release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: "${{ github.event_name }}"
+          FORCE_INPUT: "${{ inputs.force_rebuild }}"
         run: |
-          # 纯粹判断：只要这个 Commit 曾经发布过 Release，一律直接跳过
-          if gh release view "${{ env.RELEASE_TAG }}" --repo ${{ github.repository }} >/dev/null 2>&1; then
-            echo "☕ 官方 MicroPython 无新 Commit (已构建过 Tag: ${{ env.RELEASE_TAG }})，自动跳过。"
-            echo "should_build=false" >> $GITHUB_OUTPUT
-          else
-            echo "⚡ 检测到官方 MicroPython 有新 Commit，触发编译！"
+          # 1. 如果是手动点击按钮触发，且勾选了强制重新编译（默认勾选），直接强制编译！
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$FORCE_INPUT" = "true" ]; then
+            echo "🚀 手动触发：强制执行重新编译（忽略已存在的 Release，无需手动删除）！"
             echo "should_build=true" >> $GITHUB_OUTPUT
+          else
+            # 2. 如果是每天定时任务（Cron），才执行查重跳过逻辑
+            if gh release view "${{ env.RELEASE_TAG }}" --repo ${{ github.repository }} >/dev/null 2>&1; then
+              echo "☕ 定时巡检：官方 MicroPython 无新 Commit (已构建过 Tag: ${{ env.RELEASE_TAG }})，自动跳过。"
+              echo "should_build=false" >> $GITHUB_OUTPUT
+            else
+              echo "⚡ 定时巡检：检测到官方 MicroPython 有新 Commit，触发自动编译！"
+              echo "should_build=true" >> $GITHUB_OUTPUT
+            fi
           fi
 
       - name: Install Build Dependencies
@@ -74,51 +88,40 @@ jobs:
           BOARD_DIR="ports/rp2/boards/RETROMAGIC_RP2350A"
           mkdir -p $BOARD_DIR
 
-          # 1. 注入压测通过的 mpconfigboard.cmake
+          # 1. 核心要素一与要素三：指定 RP2350 目标 + 强制 6 分频 (25MHz)
           cat << 'EOF' > $BOARD_DIR/mpconfigboard.cmake
           # cmake file for RETROMAGIC_RP2350A
-
-          # 1. 编译目标指定为 RP2350 Cortex-M33
           set(MICROPY_BOARD_TARGET "rp2350-arm-s")
-
-          # 2. 基板设定为 pico2
           set(PICO_BOARD "pico2")
-
-          # 3. 指定 Flash 总容量为 4MB
           set(PICO_FLASH_SIZE_BYTES 4194304)
 
-          # 4. 核心解锁项：强制 RP2350 嵌入并运行 XIP Flash 初始化代码
+          # 核心要素二：强制嵌入 XIP Flash 引导初始化
           set(PICO_EMBED_XIP_SETUP 1 CACHE STRING "" FORCE)
           add_compile_definitions(PICO_EMBED_XIP_SETUP=1)
 
-          # 5. 锁定 6 分频 (25MHz)，保障国产 Flash 绝对稳定
+          # 核心要素三：锁定 6 分频 (25MHz)
           set(PICO_FLASH_SPI_CLKDIV 6 CACHE STRING "" FORCE)
           add_compile_definitions(PICO_FLASH_SPI_CLKDIV=6)
 
-          # 6. 指定内部 LittleFS 文件系统为 2MB
           if (NOT DEFINED MICROPY_HW_FLASH_STORAGE_BYTES)
               set(MICROPY_HW_FLASH_STORAGE_BYTES 2097152)
           endif()
           EOF
 
-          # 2. 注入压测通过的 mpconfigboard.h
+          # 2. 板级 C 头文件
           cat << 'EOF' > $BOARD_DIR/mpconfigboard.h
-          // Board and hardware specific configuration
           #ifndef MICROPY_INCLUDED_MPCONFIGBOARD_H
           #define MICROPY_INCLUDED_MPCONFIGBOARD_H
 
           #define MICROPY_HW_BOARD_NAME          "RetroMagic RP2350A"
           #define MICROPY_HW_MCU_NAME            "RP2350"
 
-          // 1. 明确禁用 PSRAM 探测
           #undef MICROPY_HW_ENABLE_PSRAM
           #define MICROPY_HW_ENABLE_PSRAM        (0)
 
-          // 2. 内部 LittleFS 存储盘定义为 2MB
           #undef MICROPY_HW_FLASH_STORAGE_BYTES
           #define MICROPY_HW_FLASH_STORAGE_BYTES (2 * 1024 * 1024)
 
-          // 3. 锁定 6 分频 (25MHz)
           #undef PICO_FLASH_SPI_CLKDIV
           #define PICO_FLASH_SPI_CLKDIV          6
 
