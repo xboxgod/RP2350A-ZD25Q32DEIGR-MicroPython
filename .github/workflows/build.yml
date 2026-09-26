@@ -169,15 +169,7 @@ jobs:
           prerelease: false
           fail_on_unmatched_files: true
           files: ${{ env.TARGET_FILENAME }}
-          body: |
-            ### 🚀 RetroMagic RP2350A Industrial-Grade MicroPython Upstream Sync Firmware
-            ### 🚀 RetroMagic RP2350A 工业级 MicroPython 官方同步固件
-
-            ---
-
-            #### 📋 Release Notes / 发布说明
-
-            * Core Architecture / 内核架构: ARM Cortex-M33 (`rp2350-arm-s` / UF2 Family ID: `0xe48bff57`)
-            * Flash Hardening / 防变砖策略: 6-divider (25 MHz) + PICO_EMBED_XIP_SETUP=1 (6分频 + 驱动加固，完美兼容各类敏感 Flash 芯片，告别死锁)
-            * Storage Layout / 存储空间: 4MB Flash (Allocated with 2MB LittleFS storage space / 划分 2MB LittleFS 磁盘空间)
+          body: "RetroMagic RP2350A Industrial-Grade MicroPython Upstream Sync Firmware (6-divider 25MHz Flash Hardening)"
 ```[cite: 4, 5]
+
+把上面这段直接替换进去，绝对秒过语法检查！
