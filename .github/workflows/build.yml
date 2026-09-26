@@ -175,5 +175,5 @@ jobs:
             - **构建日期**：${{ env.DATE_TAG }}
             - **官方 MicroPython 版本**：`${{ env.MP_VERSION }}` (Commit: `${{ env.COMMIT_HASH }}`)
             - **内核架构**：ARM Cortex-M33 (`rp2350-arm-s` / UF2 Family ID: `0xe48bff57`)
-            - **Flash 防变砖策略**：6 分频 ($25\text{ MHz}$) + `PICO_EMBED_XIP_SETUP=1`，兼具最高物理稳定性与通杀各类国产 Flash 的兼容性。
+            - **Flash 防变砖策略**：6 分频 ($25\text{ MHz}$) + `PICO_EMBED_XIP_SETUP=1`，兼容Raspberry 2350A 配合多种品牌 4MB Flash 稳定性与兼容性。
             - **存储空间**：4MB Flash (划分 2MB LittleFS 磁盘空间)。
