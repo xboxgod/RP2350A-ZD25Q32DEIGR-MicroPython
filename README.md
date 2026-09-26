@@ -20,6 +20,14 @@ When running official upstream MicroPython on RP2350 boards equipped with certai
 
 ---
 
+## 📥 Download
+
+Head over to the [Releases page](../../releases) of this repository to download the latest compiled `RetroMagic_RP2350A_*.uf2` firmware and flash it to your development board!
+
+*(If you find this project helpful, feel free to give it a Star ⭐ or use this firmware directly to solve your Flash compatibility issues!)*
+
+---
+
 <a id="chinese"></a>
 ## 🚀 概述
 
