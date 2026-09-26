@@ -133,6 +133,7 @@ jobs:
 
       - name: Verify UF2 Architecture Safety (Family ID Check)
         if: steps.check_release.outputs.should_build == 'true'
+        shell: bash # 显式指定使用 bash 解释器
         run: |
           UF2_FILE="ports/rp2/build-RETROMAGIC_RP2350A/firmware.uf2"
           
@@ -140,7 +141,6 @@ jobs:
           HEX_ID=$(xxd -s 28 -l 4 "$UF2_FILE" | awk '{print $2$3}' | tr -d ' \n\r')
           echo "读取到的 Family ID (16进制): $HEX_ID"
           
-          # 使用双括号语法避免 Bash 比对异损
           if [[ "$HEX_ID" == "57ff8be4" \vert{}\vert{} "$HEX_ID" == "59ff8be4" ]]; then
             echo "✅ 架构校验通过！确认为 RP2350 (Cortex-M33) 架构固件。"
           else
