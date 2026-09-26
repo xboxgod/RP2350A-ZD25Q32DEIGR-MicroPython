@@ -9,7 +9,7 @@ on:
         description: '强制重新编译（跳过 Release 已存在检查）'
         required: false
         type: boolean
-        default: true # 手动点运行时默认强制编译，无需手动去 Releases 删除旧包！
+        default: true
 
 concurrency:
   group: ${{ github.workflow }}
@@ -55,12 +55,10 @@ jobs:
           EVENT_NAME: "${{ github.event_name }}"
           FORCE_INPUT: "${{ inputs.force_rebuild }}"
         run: |
-          # 1. 如果是手动点击按钮触发（workflow_dispatch），默认直接编译
           if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$FORCE_INPUT" = "true" ]; then
-            echo "🚀 手动触发：强制执行重新编译（忽略已存在的 Release，无需手动删除）！"
+            echo "🚀 手动触发：强制执行重新编译！"
             echo "should_build=true" >> $GITHUB_OUTPUT
           else
-            # 2. 如果是每天定时任务（Cron），才执行查重跳过逻辑
             if gh release view "${{ env.RELEASE_TAG }}" --repo ${{ github.repository }} >/dev/null 2>&1; then
               echo "☕ 定时巡检：官方 MicroPython 无新 Commit (已构建过 Tag: ${{ env.RELEASE_TAG }})，自动跳过。"
               echo "should_build=false" >> $GITHUB_OUTPUT
@@ -139,11 +137,11 @@ jobs:
           UF2_FILE="ports/rp2/build-RETROMAGIC_RP2350A/firmware.uf2"
           
           echo "=== 检查 UF2 Family ID (偏移 28-31 字节) ==="
-          HEX_ID=$(xxd -s 28 -l 4 "$UF2_FILE" | awk '{print $2$3}')
+          HEX_ID=$(xxd -s 28 -l 4 "$UF2_FILE" | awk '{print $2$3}' | tr -d ' \n\r')
           echo "读取到的 Family ID (16进制): $HEX_ID"
           
-          # 兼容 57ff8be4 (RP2350 标准 UF2) 与 59ff8be4 (RP2350 ARM-S)
-          if [ "$HEX_ID" = "57ff8be4" ] \vert{}\vert{} [ "$HEX_ID" = "59ff8be4" ]; then
+          # 使用双括号语法避免 Bash 比对异损
+          if [[ "$HEX_ID" == "57ff8be4" \vert{}\vert{} "$HEX_ID" == "59ff8be4" ]]; then
             echo "✅ 架构校验通过！确认为 RP2350 (Cortex-M33) 架构固件。"
           else
             echo "❌ 架构校验失败！读取到的是 RP2040 或其他非法 ID ($HEX_ID)，终止发布！"
