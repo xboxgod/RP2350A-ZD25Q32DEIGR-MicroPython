@@ -27,7 +27,8 @@ jobs:
           repository: micropython/micropython
           ref: master
           submodules: recursive
-          fetch-depth: 0 # 获取完整 git 历史以精确提取官方版本号
+          fetch-depth: 0 # 获取完整 git 历史
+          fetch-tags: true # 显式拉取所有 Tag 以获取准确版本号
 
       - name: Get MicroPython Official Version & Commit
         id: mp_info
@@ -52,18 +53,18 @@ jobs:
         id: check_release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IS_FORCE: "${{ github.event.inputs.force_rebuild }}"
         run: |
-          FORCE="${{ inputs.force_rebuild }}"
-          if [ "$FORCE" = "true" ]; then
-            echo "手动触发强制重新编译！"
+          if [ "$IS_FORCE" = "true" ]; then
+            echo "🚀 手动触发强制重新编译！"
             echo "should_build=true" >> $GITHUB_OUTPUT
           else
             # 检查 Releases 中是否已经存在当前 Commit 的构建
             if gh release view "${{ env.RELEASE_TAG }}" --repo ${{ github.repository }} >/dev/null 2>&1; then
-              echo "官方 MicroPython 无新 Commit (已构建过 Tag: ${{ env.RELEASE_TAG }})，跳过本次编译。"
+              echo "☕ 官方 MicroPython 无新 Commit (已构建过 Tag: ${{ env.RELEASE_TAG }})，自动跳过本次编译。"
               echo "should_build=false" >> $GITHUB_OUTPUT
             else
-              echo "检测到官方 MicroPython 有更新 Commit，触发自动编译！"
+              echo "⚡ 检测到官方 MicroPython 有新 Commit，触发自动编译！"
               echo "should_build=true" >> $GITHUB_OUTPUT
             fi
           fi
@@ -86,7 +87,7 @@ jobs:
           BOARD_DIR="ports/rp2/boards/RETROMAGIC_RP2350A"
           mkdir -p $BOARD_DIR
 
-          # 1. 注入本地验证通过的 mpconfigboard.cmake
+          # 1. 注入压测通过的 mpconfigboard.cmake
           cat << 'EOF' > $BOARD_DIR/mpconfigboard.cmake
           # cmake file for RETROMAGIC_RP2350A
 
@@ -100,10 +101,11 @@ jobs:
           set(PICO_FLASH_SIZE_BYTES 4194304)
 
           # 4. 核心解锁项：强制 RP2350 嵌入并运行 XIP Flash 初始化代码
-          set(PICO_EMBED_XIP_SETUP 1)
+          set(PICO_EMBED_XIP_SETUP 1 CACHE STRING "" FORCE)
           add_compile_definitions(PICO_EMBED_XIP_SETUP=1)
 
-          # 5. 锁定 6 分频 (25MHz)，保障国产 Flash 绝对稳定
+          # 5. 锁定 6 分频 (25MHz)，同时给 CMake 变量与 C 宏赋值
+          set(PICO_FLASH_SPI_CLKDIV 6 CACHE STRING "" FORCE)
           add_compile_definitions(PICO_FLASH_SPI_CLKDIV=6)
 
           # 6. 指定内部 LittleFS 文件系统为 2MB
@@ -112,14 +114,18 @@ jobs:
           endif()
           EOF
 
-          # 2. 注入本地验证通过的 mpconfigboard.h
+          # 2. 注入压测通过的 mpconfigboard.h
           cat << 'EOF' > $BOARD_DIR/mpconfigboard.h
           // Board and hardware specific configuration
+          #ifndef MICROPY_INCLUDED_MPCONFIGBOARD_H
+          #define MICROPY_INCLUDED_MPCONFIGBOARD_H
+
           #define MICROPY_HW_BOARD_NAME          "RetroMagic RP2350A"
           #define MICROPY_HW_MCU_NAME            "RP2350"
 
           // 1. 明确禁用 PSRAM 探测
           #undef MICROPY_HW_ENABLE_PSRAM
+          #define MICROPY_HW_ENABLE_PSRAM        (0)
 
           // 2. 内部 LittleFS 存储盘定义为 2MB
           #undef MICROPY_HW_FLASH_STORAGE_BYTES
@@ -128,19 +134,38 @@ jobs:
           // 3. 锁定 6 分频 (25MHz)
           #undef PICO_FLASH_SPI_CLKDIV
           #define PICO_FLASH_SPI_CLKDIV          6
+
+          #endif // MICROPY_INCLUDED_MPCONFIGBOARD_H
           EOF
 
       - name: Compile RetroMagic RP2350A Firmware
         if: steps.check_release.outputs.should_build == 'true'
         run: |
-          # 使用 MicroPython 标准构建链完成编译
           make -C ports/rp2 BOARD=RETROMAGIC_RP2350A -j$(nproc)
+
+      - name: Verify UF2 Architecture Safety (Family ID Check)
+        if: steps.check_release.outputs.should_build == 'true'
+        run: |
+          UF2_FILE="ports/rp2/build-RETROMAGIC_RP2350A/firmware.uf2"
+          
+          echo "=== 检查 UF2 Family ID (偏移 28-31 字节) ==="
+          HEX_ID=$(xxd -s 28 -l 4 "$UF2_FILE" | awk '{print $2$3}')
+          echo "读取到的 Family ID 16进制 (Little Endian): $HEX_ID"
+          
+          # RP2350 ARM-S 标准 Family ID: 0xe48bff59 -> 小端序为 59ff 8be4
+          if [ "$HEX_ID" = "59ff8be4" ]; then
+            echo "✅ 架构校验通过！确认为 RP2350 ARM Cortex-M33 架构固件。"
+          else
+            echo "❌ 架构校验失败！读取到的 Family ID 与 RP2350 不匹配 ($HEX_ID)，终止发布！"
+            exit 1
+          fi
 
       - name: Prepare Named UF2 File
         if: steps.check_release.outputs.should_build == 'true'
         run: |
-          # 格式化输出文件名: RetroMagic_RP2350A_4MB_YYYYMMDD_官方Micropython版本.uf2
-          TARGET_FILENAME="RetroMagic_RP2350A_4MB_${{ env.DATE_TAG }}_${{ env.MP_VERSION }}.uf2"
+          # 过滤 MP_VERSION 中的特殊字符，防止文件名非法
+          CLEAN_MP_VERSION=$(echo "${{ env.MP_VERSION }}" | tr '/' '_')
+          TARGET_FILENAME="RetroMagic_RP2350A_4MB_${{ env.DATE_TAG }}_${CLEAN_MP_VERSION}.uf2"
           
           mv ports/rp2/build-RETROMAGIC_RP2350A/firmware.uf2 "${TARGET_FILENAME}"
           echo "TARGET_FILENAME=${TARGET_FILENAME}" >> $GITHUB_ENV
@@ -159,6 +184,6 @@ jobs:
 
             - **构建日期**：${{ env.DATE_TAG }}
             - **官方 MicroPython 版本**：`${{ env.MP_VERSION }}` (Commit: `${{ env.COMMIT_HASH }}`)
-            - **内核架构**：ARM Cortex-M33 (`rp2350-arm-s`)
+            - **内核架构**：ARM Cortex-M33 (`rp2350-arm-s` / UF2 Family ID: `0xe48bff59`)
             - **Flash 防变砖策略**：6 分频 ($25\text{ MHz}$) + `PICO_EMBED_XIP_SETUP=1`，兼具最高物理稳定性与通杀各类国产 Flash 的兼容性。
             - **存储空间**：4MB Flash (划分 2MB LittleFS 磁盘空间)。
