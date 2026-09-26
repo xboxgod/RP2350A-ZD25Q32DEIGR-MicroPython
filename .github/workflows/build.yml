@@ -164,8 +164,8 @@ jobs:
         if: steps.check_release.outputs.should_build == 'true'
         run: |
           cat << 'EOF' > release_notes.md
-          ### 🚀 RetroMagic RP2350A Industrial-Grade MicroPython Upstream Sync Firmware
-          ### 🚀 RetroMagic RP2350A 工业级 MicroPython 官方同步固件
+          ### ✨ RetroMagic RP2350A Enhanced Compatibility MicroPython - Official Version Rebuild
+          ### ✨ RetroMagic RP2350A MicroPython 多硬件兼容版本 - 官方版同步
 
           ---
 
@@ -178,8 +178,8 @@ jobs:
 
           **中文说明：**
           * 内核架构: ARM Cortex-M33 (`rp2350-arm-s` / UF2 Family ID: `0xe48bff57`)
-          * 防变砖策略: 6分频与驱动加固（兼容更多型号的 Flash 芯片，告别死锁）
-          * 存储空间: 4MB Flash (划分 2MB LittleFS 磁盘空间)
+          * 防变砖策略: 6分频与驱动加固（兼容更多型号的 Flash 芯片，告别软死锁）
+          * 存储空间: 2MB系统 和 2MB存储空间
           EOF
 
       - name: Publish to GitHub Releases
