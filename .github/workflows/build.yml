@@ -171,9 +171,15 @@ jobs:
 
           #### 📋 Release Notes / 发布说明
 
-          * **Core Architecture / 内核架构**: ARM Cortex-M33 (`rp2350-arm-s` / UF2 Family ID: `0xe48bff57`)
-          * **Flash Hardening / 防变砖策略**: 6-divider + PICO_EMBED_XIP_SETUP=1 (6分频与驱动加固，兼容更多型号的Flash芯片，告别死锁)
-          * **Storage Layout / 存储空间**: 4MB Flash (Allocated with 2MB LittleFS storage space / 划分 2MB LittleFS 磁盘空间)
+          **English Specification:**
+          * Core Architecture: ARM Cortex-M33 (`rp2350-arm-s` / UF2 Family ID: `0xe48bff57`)
+          * Flash Hardening: 6-divider + PICO_EMBED_XIP_SETUP=1 (Enhanced driver stability and broad Flash chip compatibility)
+          * Storage Layout: 4MB Flash (Allocated with 2MB LittleFS storage space)
+
+          **中文说明：**
+          * 内核架构: ARM Cortex-M33 (`rp2350-arm-s` / UF2 Family ID: `0xe48bff57`)
+          * 防变砖策略: 6分频与驱动加固（兼容更多型号的 Flash 芯片，告别死锁）
+          * 存储空间: 4MB Flash (划分 2MB LittleFS 磁盘空间)
           EOF
 
       - name: Publish to GitHub Releases
