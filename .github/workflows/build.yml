@@ -9,7 +9,7 @@ on:
         description: '强制重新编译（跳过 Release 已存在检查）'
         required: false
         type: boolean
-        default: true # 手动点运行时，默认开启强制重新编译！
+        default: true # 手动点运行时默认强制编译，无需手动去 Releases 删除旧包！
 
 concurrency:
   group: ${{ github.workflow }}
@@ -55,7 +55,7 @@ jobs:
           EVENT_NAME: "${{ github.event_name }}"
           FORCE_INPUT: "${{ inputs.force_rebuild }}"
         run: |
-          # 1. 如果是手动点击按钮触发，且勾选了强制重新编译（默认勾选），直接强制编译！
+          # 1. 如果是手动点击按钮触发（workflow_dispatch），默认直接编译
           if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$FORCE_INPUT" = "true" ]; then
             echo "🚀 手动触发：强制执行重新编译（忽略已存在的 Release，无需手动删除）！"
             echo "should_build=true" >> $GITHUB_OUTPUT
@@ -88,18 +88,18 @@ jobs:
           BOARD_DIR="ports/rp2/boards/RETROMAGIC_RP2350A"
           mkdir -p $BOARD_DIR
 
-          # 1. 核心要素一与要素三：指定 RP2350 目标 + 强制 6 分频 (25MHz)
+          # 1. 核心策略：RP2350 架构 + XIP 引导 + 25MHz 6分频
           cat << 'EOF' > $BOARD_DIR/mpconfigboard.cmake
           # cmake file for RETROMAGIC_RP2350A
           set(MICROPY_BOARD_TARGET "rp2350-arm-s")
           set(PICO_BOARD "pico2")
           set(PICO_FLASH_SIZE_BYTES 4194304)
 
-          # 核心要素二：强制嵌入 XIP Flash 引导初始化
+          # 强制嵌入 XIP Flash 引导初始化
           set(PICO_EMBED_XIP_SETUP 1 CACHE STRING "" FORCE)
           add_compile_definitions(PICO_EMBED_XIP_SETUP=1)
 
-          # 核心要素三：锁定 6 分频 (25MHz)
+          # 锁定 6 分频 (25MHz)
           set(PICO_FLASH_SPI_CLKDIV 6 CACHE STRING "" FORCE)
           add_compile_definitions(PICO_FLASH_SPI_CLKDIV=6)
 
@@ -137,12 +137,16 @@ jobs:
         if: steps.check_release.outputs.should_build == 'true'
         run: |
           UF2_FILE="ports/rp2/build-RETROMAGIC_RP2350A/firmware.uf2"
-          HEX_ID=$(xxd -s 28 -l 4 "$UF2_FILE" | awk '{print $2$3}')
           
-          if [ "$HEX_ID" = "59ff8be4" ]; then
-            echo "✅ 架构校验通过！确认为 RP2350 ARM Cortex-M33 架构固件。"
+          echo "=== 检查 UF2 Family ID (偏移 28-31 字节) ==="
+          HEX_ID=$(xxd -s 28 -l 4 "$UF2_FILE" | awk '{print $2$3}')
+          echo "读取到的 Family ID (16进制): $HEX_ID"
+          
+          # 兼容 57ff8be4 (RP2350 标准 UF2) 与 59ff8be4 (RP2350 ARM-S)
+          if [ "$HEX_ID" = "57ff8be4" ] \vert{}\vert{} [ "$HEX_ID" = "59ff8be4" ]; then
+            echo "✅ 架构校验通过！确认为 RP2350 (Cortex-M33) 架构固件。"
           else
-            echo "❌ 架构校验失败！Family ID 不匹配 ($HEX_ID)，终止发布！"
+            echo "❌ 架构校验失败！读取到的是 RP2040 或其他非法 ID ($HEX_ID)，终止发布！"
             exit 1
           fi
 
@@ -169,6 +173,6 @@ jobs:
 
             - **构建日期**：${{ env.DATE_TAG }}
             - **官方 MicroPython 版本**：`${{ env.MP_VERSION }}` (Commit: `${{ env.COMMIT_HASH }}`)
-            - **内核架构**：ARM Cortex-M33 (`rp2350-arm-s` / UF2 Family ID: `0xe48bff59`)
+            - **内核架构**：ARM Cortex-M33 (`rp2350-arm-s` / UF2 Family ID: `0xe48bff57`)
             - **Flash 防变砖策略**：6 分频 ($25\text{ MHz}$) + `PICO_EMBED_XIP_SETUP=1`，兼具最高物理稳定性与通杀各类国产 Flash 的兼容性。
             - **存储空间**：4MB Flash (划分 2MB LittleFS 磁盘空间)。
