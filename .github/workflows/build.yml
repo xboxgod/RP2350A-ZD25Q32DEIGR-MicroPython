@@ -86,7 +86,6 @@ jobs:
           BOARD_DIR="ports/rp2/boards/RETROMAGIC_RP2350"
           mkdir -p $BOARD_DIR
 
-          # CMake 配置保持不变（防死锁 6 分频和 16MB 寻址解锁）
           cat << 'EOF' > $BOARD_DIR/mpconfigboard.cmake
           set(MICROPY_BOARD_TARGET "rp2350-arm-s")
           set(PICO_BOARD "pico2")
@@ -103,14 +102,12 @@ jobs:
           BOARD_DIR="ports/rp2/boards/RETROMAGIC_RP2350"
           CLEAN_MP_VERSION=$(echo "${{ env.MP_VERSION }}" | tr '/' '_')
           
-          # 定义需要编译的容量数组
           SIZES=(2 4 8 16)
           
           for SIZE in "${SIZES[@]}"; do
             echo "========================================="
             echo "🚀 开始编译 ${SIZE}MB 版本..."
             
-            # 计算分区大小
             if [ $SIZE -eq 2 ]; then
               FS_BASE=$((1 * 1024 * 1024))
               FS_BYTES=$((1 * 1024 * 1024))
@@ -120,7 +117,6 @@ jobs:
               FS_BYTES=$((TOTAL_BYTES - FS_BASE))
             fi
             
-            # 动态生成本次编译所需的 mpconfigboard.h
             cat << EOF > $BOARD_DIR/mpconfigboard.h
           #ifndef MICROPY_INCLUDED_MPCONFIGBOARD_H
           #define MICROPY_INCLUDED_MPCONFIGBOARD_H
@@ -137,13 +133,9 @@ jobs:
           #endif
           EOF
             
-            # 必须先清理旧的构建缓存，否则 C 编译器不会重新处理常量
             make -C ports/rp2 BOARD=RETROMAGIC_RP2350 clean
-            
-            # 满载编译
             make -C ports/rp2 BOARD=RETROMAGIC_RP2350 -j$(nproc)
             
-            # 提取并重命名文件
             TARGET_FILENAME="RetroMagic_RP2350_${SIZE}MB_${CLEAN_MP_VERSION}.uf2"
             cp ports/rp2/build-RETROMAGIC_RP2350/firmware.uf2 "${TARGET_FILENAME}"
             echo "✅ ${SIZE}MB 版本编译完成：${TARGET_FILENAME}"
@@ -154,7 +146,6 @@ jobs:
         if: steps.check_release.outputs.should_build == 'true'
         shell: bash
         run: |
-          # 随机抽查 4MB 版本进行架构验证
           UF2_FILE=$(ls RetroMagic_RP2350_4MB_*.uf2)
           echo "=== 检查 UF2 Family ID (偏移 28-31 字节) ==="
           HEX_ID=$(xxd -s 28 -l 4 "$UF2_FILE" | awk '{print $2$3}' | tr -d ' \n\r')
@@ -169,9 +160,23 @@ jobs:
         run: |
           cat << 'EOF' > release_notes.md
           ### ✨ RetroMagic RP2350 Universal Flash MicroPython
-          
-          **固件特性：**
-          * **架构兼容**: 通用 ARM Cortex-M33 (完美兼容 RP2350A 与 RP2350B 全系芯片)。
+          ### ✨ RetroMagic RP2350 多硬件兼容版本 - 官方版同步更新
+
+          ---
+
+          #### 📋 Release Notes / 发布说明
+
+          **English Specification:**
+          * **Core Architecture**: Universal ARM Cortex-M33 (Fully compatible with both RP2350A and RP2350B series).
+          * **Flash Hardening**: 6-divider + `PICO_EMBED_XIP_SETUP=1` (Enhanced driver stability and broad Flash chip compatibility, fixing soft-lock issues on 3rd-party Flash).
+          * **Multi-Capacity Matrix**: This release includes 4 variants (2MB, 4MB, 8MB, and 16MB). Please choose according to your hardware Flash size:
+            * **2MB Variant**: 1MB Firmware + 1MB User Storage
+            * **4MB Variant**: 2MB Firmware + 2MB User Storage
+            * **8MB Variant**: 2MB Firmware + 6MB User Storage
+            * **16MB Variant**: 2MB Firmware + 14MB User Storage
+
+          **中文说明：**
+          * **内核架构**: 通用 ARM Cortex-M33 (完美兼容 RP2350A 与 RP2350B 全系芯片)。
           * **Flash 兼容**: 开启 6 分频与 `PICO_EMBED_XIP_SETUP`，修复官方 2 分频导致的普冉/兆易等第三方 Flash 软死锁/变砖问题。
           * **多容量可选**: 本次 Release 包含 2MB、4MB、8MB、16MB 四个版本，请根据实际硬件 Flash 选载：
             * **2MB 版**: 1MB 固件 + 1MB 用户磁盘
