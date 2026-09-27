@@ -10,7 +10,7 @@
 This repository provides an automated, industrial-grade daily build pipeline for **MicroPython** targeting **RP2350** boards. 
 
 ### 🔥 The Problem It Solves
-When running official upstream MicroPython on RP2350 boards equipped with some special SPI/QSPI Flash chips (such as Zetta/澜智 ZD25Q32DEIGR), the default aggressive XIP/SSI clock configurations can cause bus faults, leading to hard locks or complete boot failure (device fails to enumerate on USB).
+When running official upstream MicroPython on RP2350 boards equipped with some special SPI/QSPI Flash chips (such as Zetta/澜智 PUYA/普冉 etc.), the default aggressive XIP/SSI clock configurations can cause bus faults, leading to hard locks or complete boot failure (device fails to enumerate on USB).
 
 ### ✨ Key Features
 * **Auto-Sync with Upstream**: Automatically syncs with the official MicroPython master branch daily via GitHub Actions.
