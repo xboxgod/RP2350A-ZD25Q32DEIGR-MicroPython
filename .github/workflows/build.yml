@@ -86,12 +86,14 @@ jobs:
           BOARD_DIR="ports/rp2/boards/RETROMAGIC_RP2350A"
           mkdir -p $BOARD_DIR
 
-          # 1. 核心策略：RP2350 架构 + XIP 引导 + 25MHz 6分频
+          # 1. CMake 策略：放开 XIP 寻址窗口至 16MB + 25MHz 6分频 (防死锁/防越界)
           cat << 'EOF' > $BOARD_DIR/mpconfigboard.cmake
           # cmake file for RETROMAGIC_RP2350A
           set(MICROPY_BOARD_TARGET "rp2350-arm-s")
           set(PICO_BOARD "pico2")
-          set(PICO_FLASH_SIZE_BYTES 4194304)
+          
+          # 解锁 Pico SDK 的 XIP 最大寻址空间至 16MB
+          set(PICO_FLASH_SIZE_BYTES 16777216)
 
           # 强制嵌入 XIP Flash 引导初始化
           set(PICO_EMBED_XIP_SETUP 1 CACHE STRING "" FORCE)
@@ -100,16 +102,14 @@ jobs:
           # 锁定 6 分频 (25MHz)
           set(PICO_FLASH_SPI_CLKDIV 6 CACHE STRING "" FORCE)
           add_compile_definitions(PICO_FLASH_SPI_CLKDIV=6)
-
-          if (NOT DEFINED MICROPY_HW_FLASH_STORAGE_BYTES)
-              set(MICROPY_HW_FLASH_STORAGE_BYTES 2097152)
-          endif()
           EOF
 
-          # 2. 板级 C 头文件
+          # 2. 板级 C 头文件：重定向 MicroPython 文件系统宏定义至动态函数
           cat << 'EOF' > $BOARD_DIR/mpconfigboard.h
           #ifndef MICROPY_INCLUDED_MPCONFIGBOARD_H
           #define MICROPY_INCLUDED_MPCONFIGBOARD_H
+
+          #include <stdint.h>
 
           #define MICROPY_HW_BOARD_NAME          "RetroMagic RP2350A"
           #define MICROPY_HW_MCU_NAME            "RP2350"
@@ -117,13 +117,74 @@ jobs:
           #undef MICROPY_HW_ENABLE_PSRAM
           #define MICROPY_HW_ENABLE_PSRAM        (0)
 
-          #undef MICROPY_HW_FLASH_STORAGE_BYTES
-          #define MICROPY_HW_FLASH_STORAGE_BYTES (2 * 1024 * 1024)
-
           #undef PICO_FLASH_SPI_CLKDIV
           #define PICO_FLASH_SPI_CLKDIV          6
 
+          // 声明 C 语言动态读取函数
+          uint32_t get_dynamic_flash_storage_base(void);
+          uint32_t get_dynamic_flash_storage_bytes(void);
+
+          // 动态重定向 LittleFS 的挂载起始物理地址与总大小
+          #undef MICROPY_HW_FLASH_STORAGE_BASE
+          #define MICROPY_HW_FLASH_STORAGE_BASE  (get_dynamic_flash_storage_base())
+
+          #undef MICROPY_HW_FLASH_STORAGE_BYTES
+          #define MICROPY_HW_FLASH_STORAGE_BYTES (get_dynamic_flash_storage_bytes())
+
           #endif // MICROPY_INCLUDED_MPCONFIGBOARD_H
+          EOF
+
+          # 3. 板级 C 代码：在 LittleFS 挂载前通过 0x9F JEDEC ID 动态划分物理空间
+          cat << 'EOF' > $BOARD_DIR/board.c
+          #include "py/mpconfig.h"
+          #include "hardware/flash.h"
+          #include "hardware/sync.h"
+          #include "pico/stdlib.h"
+
+          static uint32_t cached_flash_total = 0;
+
+          // 通过 JEDEC ID (0x9F) 实时测定 Flash 真实容量
+          static uint32_t get_flash_total_bytes(void) {
+              if (cached_flash_total != 0) {
+                  return cached_flash_total;
+              }
+
+              uint8_t txbuf[1] = { 0x9F };
+              uint8_t rxbuf[3] = { 0 };
+
+              uint32_t interrupts = save_and_disable_interrupts();
+              flash_do_cmd(txbuf, rxbuf, 3);
+              restore_interrupts(interrupts);
+
+              uint8_t capacity_code = rxbuf[2];
+
+              // 标准 JEDEC 容量换算 (1 << code) / 8 字节
+              if (capacity_code >= 0x15 && capacity_code <= 0x19) {
+                  cached_flash_total = (1u << capacity_code) / 8;
+              } else {
+                  cached_flash_total = 4 * 1024 * 1024; // 异常兜底：按 4MB 处理
+              }
+              return cached_flash_total;
+          }
+
+          // 动态计算文件系统起始地址
+          uint32_t get_dynamic_flash_storage_base(void) {
+              uint32_t total = get_flash_total_bytes();
+              if (total <= 2 * 1024 * 1024) {
+                  return 1 * 1024 * 1024; // <= 2MB: 留 1MB 给固件，从 1MB 处开始挂载 LittleFS
+              }
+              return 2 * 1024 * 1024;     // > 2MB (4MB/8MB/16MB): 留 2MB 给固件，从 2MB 处开始挂载 LittleFS
+          }
+
+          // 动态计算文件系统可用总大小 (total - base)
+          uint32_t get_dynamic_flash_storage_bytes(void) {
+              uint32_t total = get_flash_total_bytes();
+              uint32_t base = get_dynamic_flash_storage_base();
+              if (total > base) {
+                  return total - base;    // 剩余空间全部给文件系统 (如 16MB 自动得到 14MB 磁盘)
+              }
+              return 1 * 1024 * 1024;     // 保底 1MB
+          }
           EOF
 
       - name: Compile RetroMagic RP2350A Firmware
@@ -174,12 +235,12 @@ jobs:
           **English Specification:**
           * Core Architecture: ARM Cortex-M33 (`rp2350-arm-s` / UF2 Family ID: `0xe48bff57`)
           * Flash Hardening: 6-divider + PICO_EMBED_XIP_SETUP=1 (Enhanced driver stability and broad Flash chip compatibility)
-          * Storage Layout: 4MB Flash (Allocated with 2MB LittleFS storage space)
+          * Storage Layout: Auto-detect (1MB FS for 2MB Flash, dynamic max FS for 4MB/8MB/16MB Flash)
 
           **中文说明：**
           * 内核架构: ARM Cortex-M33 (`rp2350-arm-s` / UF2 Family ID: `0xe48bff57`)
           * 防变砖策略: 6分频与驱动加固（兼容更多型号的 Flash 芯片，告别软死锁）
-          * 存储空间: 2MB系统 和 2MB存储空间
+          * 存储空间: 动态自动识别（2MB 芯片自动开辟 1MB 磁盘，>2MB 芯片预留 2MB 固件后剩余全给磁盘）
           EOF
 
       - name: Publish to GitHub Releases
