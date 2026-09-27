@@ -34,7 +34,7 @@ Head over to the [Releases page](../../releases) of this repository to download 
 本仓库提供针对 **RP2350** 硬件的 **MicroPython** 官方版本解决兼容性问题 修复非PICO2原厂开发板兼容性问题 自动和官方版本同步。
 
 ### 🔥 解决的痛点
-在使用官方原版 MicroPython 运行于搭载某些特殊 SPI/QSPI Flash（如 Zetta/澜智 PUYA/普冉 MXIC/旺宏电子 GigaDevice/兆易创新 等等）的 RP2350 板卡时，原版过激的 XIP/SSI 时钟和总线配置极易导致底层时序错乱，表现为**一刷就死机、甚至连 USB 端口都无法枚举**的变软砖现象。
+在使用官方原版 MicroPython 在RP2350系列搭载 SPI/QSPI Flash（如 Zetta/澜智 PUYA/普冉 MXIC/旺宏电子 GigaDevice/兆易创新 等等）时，原版过于激进的 XIP/SSI 时钟和总线配置极易导致底层时序错乱，表现为**一刷就死机、甚至连 USB 端口都无法枚举**的变软砖现象。
 
 ### ✨ 核心特性
 * **每日自动同步官方**：通过 GitHub Actions 定时巡检官方 MicroPython 主干更新，自动拉取最新源码编译。
