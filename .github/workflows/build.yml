@@ -177,8 +177,8 @@ jobs:
 
           **中文说明：**
           * **内核架构**: 通用 ARM Cortex-M33 (完美兼容 RP2350A 与 RP2350B 全系芯片)。
-          * **Flash 兼容**: 开启 6 分频与 `PICO_EMBED_XIP_SETUP`，修复官方 2 分频导致的普冉/兆易等第三方 Flash 软死锁/变砖问题。
-          * **多容量可选**: 本次 Release 包含 2MB、4MB、8MB、16MB 四个版本，请根据实际硬件 Flash 选载：
+          * **Flash 兼容**: 开启 6 分频与 `PICO_EMBED_XIP_SETUP`，修复官方激进设置引起RP2350搭配多种Flash导致软死锁/变砖问题。
+          * **多容量可选**: 本次 Release 包含 2MB、4MB、8MB、16MB 四个版本，请根据实际硬件 Flash容量 选择：
             * **2MB 版**: 1MB 固件 + 1MB 用户磁盘
             * **4MB 版**: 2MB 固件 + 2MB 用户磁盘
             * **8MB 版**: 2MB 固件 + 6MB 用户磁盘
