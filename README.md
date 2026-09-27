@@ -1,4 +1,4 @@
-# RetroMagic RP2350A MicroPython Custom Firmware Builder
+# RetroMagic RP2350 MicroPython Custom Firmware Builder
 
 [English](#english) | [中文说明](#chinese)
 
@@ -7,7 +7,7 @@
 <a id="english"></a>
 ## 🚀 Overview
 
-This repository provides an automated, industrial-grade daily build pipeline for **MicroPython** targeting **RP2350A** boards. 
+This repository provides an automated, industrial-grade daily build pipeline for **MicroPython** targeting **RP2350** boards. 
 
 ### 🔥 The Problem It Solves
 When running official upstream MicroPython on RP2350 boards equipped with some special SPI/QSPI Flash chips (such as Zetta/澜智 ZD25Q32DEIGR), the default aggressive XIP/SSI clock configurations can cause bus faults, leading to hard locks or complete boot failure (device fails to enumerate on USB).
@@ -22,7 +22,7 @@ When running official upstream MicroPython on RP2350 boards equipped with some s
 
 ## 📥 Download
 
-Head over to the [Releases page](../../releases) of this repository to download the latest compiled `RetroMagic_RP2350A_*.uf2` firmware and flash it to your development board!
+Head over to the [Releases page](../../releases) of this repository to download the latest compiled `RetroMagic_RP2350_*.uf2` firmware and flash it to your development board!
 
 *(If you find this project helpful, feel free to give it a Star ⭐ or use this firmware directly to solve your Flash compatibility issues!)*
 
@@ -31,10 +31,10 @@ Head over to the [Releases page](../../releases) of this repository to download 
 <a id="chinese"></a>
 ## 🚀 概述
 
-本仓库提供针对 **RP2350A** 硬件的 **MicroPython** 官方同步及工业级加固固件的自动化每日构建流水线。
+本仓库提供针对 **RP2350** 硬件的 **MicroPython** 官方同步及工业级加固固件的自动化每日构建流水线。
 
 ### 🔥 解决的痛点
-在使用官方原版 MicroPython 运行于搭载某些特殊 SPI/QSPI Flash（如 Zetta/澜智 ZD25Q32DEIGR 等等）的 RP2350 板卡时，原版过激的 XIP/SSI 时钟和总线配置极易导致底层时序错乱，表现为**一刷就死机、甚至连 USB 端口都无法枚举**的变软砖现象。
+在使用官方原版 MicroPython 运行于搭载某些特殊 SPI/QSPI Flash（如 Zetta/澜智 PUYA/普冉 等等）的 RP2350 板卡时，原版过激的 XIP/SSI 时钟和总线配置极易导致底层时序错乱，表现为**一刷就死机、甚至连 USB 端口都无法枚举**的变软砖现象。
 
 ### ✨ 核心特性
 * **每日自动同步官方**：通过 GitHub Actions 定时巡检官方 MicroPython 主干更新，自动拉取最新源码编译。
@@ -46,7 +46,7 @@ Head over to the [Releases page](../../releases) of this repository to download 
 
 ## 📥 快速下载 | Download
 
-直接前往本仓库的 [Releases 页面](../../releases) 获取最新编译好的 `RetroMagic_RP2350A_*.uf2` 固件刷入开发板即可！
+直接前往本仓库的 [Releases 页面](../../releases) 获取最新编译好的 `RetroMagic_RP2350_*.uf2` 固件刷入开发板即可！
 
 ---
 *(如果你对这个项目感兴趣，欢迎点个 Star ⭐，或者在遇到 Flash 兼容性问题时直接取用此固件！)*
