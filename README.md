@@ -38,7 +38,7 @@ Head over to the [Releases page](../../releases) of this repository to download 
 
 ### ✨ 核心特性
 * **每日自动同步官方**：通过 GitHub Actions 定时巡检官方 MicroPython 主干更新，自动拉取最新源码编译。
-* **硬核防变砖护甲**：强制 ** 6分频 ** QSPI 时钟（`PICO_FLASH_SPI_CLKDIV=6`）并启用安全引导，2350搭配各种Flash芯片 告别死锁。
+* **硬核防变砖护甲**：强制 ** 6分频 ** QSPI 时钟 并启用安全引导，2350搭配各种Flash芯片 告别死锁。
 * **双重架构安全校验**：流水线内嵌 UF2 固件 Family ID 自动化校验（ARM Cortex-M33 架构的 `0xe48bff57`），确保输出固件 100% 可用。
 * **自动发布 Release**：编译成功后自动挂载到 GitHub Releases，对应不同容量FLASH版本，方便随时下载。
 
